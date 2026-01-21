@@ -90,8 +90,10 @@ class EmbeddingService:
             Embedding vector as list of floats
         """
         if not text or not text.strip():
-            logger.warning("Empty text provided for embedding")
+            logger.warning("[EMBED] Empty text provided for embedding")
             return [0.0] * self.dimension
+        
+        logger.debug(f"[EMBED] Generating embedding for text ({len(text)} chars)")
         
         payload = {
             "model": self.model,
@@ -99,25 +101,29 @@ class EmbeddingService:
         }
         
         try:
+            start_time = datetime.utcnow()
             response = await self.client.post(
                 "/api/embeddings",
                 json=payload
             )
             response.raise_for_status()
             
+            elapsed = (datetime.utcnow() - start_time).total_seconds()
             result = response.json()
             embedding = result.get("embedding", [])
             
+            logger.debug(f"[EMBED] Embedding generated in {elapsed:.3f}s (dim: {len(embedding)})")
+            
             if len(embedding) != self.dimension:
                 logger.warning(
-                    f"Unexpected embedding dimension: {len(embedding)} "
+                    f"[EMBED] Unexpected embedding dimension: {len(embedding)} "
                     f"(expected {self.dimension})"
                 )
             
             return embedding
             
         except Exception as e:
-            logger.error(f"Embedding generation failed: {e}")
+            logger.error(f"[EMBED] Embedding generation failed: {e}")
             raise
     
     async def generate_embeddings(
@@ -138,7 +144,12 @@ class EmbeddingService:
             List of embedding vectors
         """
         if not texts:
+            logger.warning("[EMBED] No texts provided for batch embedding")
             return []
+        
+        logger.info(f"[EMBED] Starting batch embedding for {len(texts)} texts")
+        logger.info(f"[EMBED] Batch size: {self.batch_size}")
+        logger.info(f"[EMBED] Model: {self.model}")
         
         start_time = datetime.utcnow()
         all_embeddings = []
@@ -147,29 +158,42 @@ class EmbeddingService:
         # Process in batches
         for i in range(0, total, self.batch_size):
             batch = texts[i:i + self.batch_size]
+            batch_num = i // self.batch_size + 1
+            total_batches = (total + self.batch_size - 1) // self.batch_size
+            
+            logger.info(f"[EMBED] Processing batch {batch_num}/{total_batches} ({len(batch)} texts)")
+            batch_start = datetime.utcnow()
             
             # Generate embeddings concurrently within batch
             tasks = [self.generate_embedding(text) for text in batch]
             batch_embeddings = await asyncio.gather(*tasks, return_exceptions=True)
             
+            batch_elapsed = (datetime.utcnow() - batch_start).total_seconds()
+            
             # Handle any errors
+            errors = 0
             for j, emb in enumerate(batch_embeddings):
                 if isinstance(emb, Exception):
-                    logger.error(f"Embedding error for text {i+j}: {emb}")
+                    logger.error(f"[EMBED] Error for text {i+j}: {emb}")
                     # Use zero vector as fallback
                     all_embeddings.append([0.0] * self.dimension)
+                    errors += 1
                 else:
                     all_embeddings.append(emb)
             
+            processed = min(i + self.batch_size, total)
+            logger.info(f"[EMBED] Batch {batch_num} complete in {batch_elapsed:.2f}s ({errors} errors)")
+            
             if show_progress:
-                processed = min(i + self.batch_size, total)
-                logger.info(f"Embedded {processed}/{total} texts")
+                logger.info(f"[EMBED] Progress: {processed}/{total} texts ({100*processed/total:.1f}%)")
         
         duration = (datetime.utcnow() - start_time).total_seconds()
-        logger.info(
-            f"Generated {len(all_embeddings)} embeddings in {duration:.2f}s "
-            f"({len(all_embeddings)/duration:.1f} texts/sec)"
-        )
+        rate = len(all_embeddings) / duration if duration > 0 else 0
+        
+        logger.info(f"[EMBED] Batch embedding COMPLETE")
+        logger.info(f"[EMBED]   Total: {len(all_embeddings)} embeddings")
+        logger.info(f"[EMBED]   Duration: {duration:.2f}s")
+        logger.info(f"[EMBED]   Rate: {rate:.1f} texts/sec")
         
         return all_embeddings
     
@@ -187,10 +211,13 @@ class EmbeddingService:
         Returns:
             Query embedding vector
         """
+        logger.info(f"[EMBED] Generating query embedding for: '{query[:50]}...'")
         # nomic-embed-text benefits from a search prefix for queries
         # This helps differentiate query intent from document content
         prefixed_query = f"search_query: {query}"
-        return await self.generate_embedding(prefixed_query)
+        embedding = await self.generate_embedding(prefixed_query)
+        logger.info(f"[EMBED] Query embedding generated (dim: {len(embedding)})")
+        return embedding
     
     async def generate_document_embedding(self, text: str) -> List[float]:
         """

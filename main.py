@@ -212,7 +212,15 @@ async def process_document(
     start_time = datetime.utcnow()
     document_id = str(uuid.uuid4())
     
-    logger.info(f"Processing document: {file.filename} (ID: {document_id})")
+    logger.info("=" * 60)
+    logger.info(f"[PROCESS] Starting document processing")
+    logger.info(f"[PROCESS] Document ID: {document_id}")
+    logger.info(f"[PROCESS] Filename: {file.filename}")
+    logger.info(f"[PROCESS] Content-Type: {file.content_type}")
+    logger.info(f"[PROCESS] Collection: {collection_name}")
+    logger.info(f"[PROCESS] Schema Template: {schema_template or 'None'}")
+    logger.info(f"[PROCESS] Index Document: {index_document}")
+    logger.info("=" * 60)
     
     # Validate file type
     content_type = file.content_type or ""
@@ -222,38 +230,50 @@ async def process_document(
     ]
     
     if content_type not in valid_types:
+        logger.error(f"[PROCESS] Invalid file type: {content_type}")
         raise HTTPException(
             status_code=400,
             detail=f"Invalid file type: {content_type}. Supported: PDF, JPEG, PNG, TIFF, BMP"
         )
     
     try:
+        logger.info(f"[STEP 1/5] Reading file content...")
         file_content = await file.read()
+        file_size = len(file_content)
+        logger.info(f"[STEP 1/5] File read complete. Size: {file_size / 1024:.2f} KB")
         
         # Resolve schema
         schema = None
         if schema_template and schema_template in SCHEMA_TEMPLATES:
             schema = SCHEMA_TEMPLATES[schema_template]
+            logger.info(f"[STEP 1/5] Using schema template: {schema_template}")
         elif extraction_schema:
             try:
                 schema = json.loads(extraction_schema)
+                logger.info(f"[STEP 1/5] Using custom schema")
             except json.JSONDecodeError:
-                logger.warning("Invalid JSON schema provided")
+                logger.warning("[STEP 1/5] Invalid JSON schema provided, proceeding without schema")
         
         # ===== TIER 1: Vision Extraction =====
+        logger.info(f"[STEP 2/5] Starting VISION extraction (Model: {settings.VISION_MODEL})")
         vision_start = datetime.utcnow()
         
         if content_type == "application/pdf":
+            logger.info(f"[STEP 2/5] Processing PDF document...")
             extracted = await vision_service.extract_from_pdf(
                 file_content, schema=schema
             )
         else:
+            logger.info(f"[STEP 2/5] Processing image document...")
             extracted = await vision_service.extract_from_image(
                 file_content, schema=schema
             )
         
         vision_time = (datetime.utcnow() - vision_start).total_seconds()
-        logger.info(f"Vision extraction completed in {vision_time:.2f}s")
+        logger.info(f"[STEP 2/5] Vision extraction COMPLETE in {vision_time:.2f}s")
+        logger.info(f"[STEP 2/5] Extracted document type: {extracted.get('document_type', 'unknown')}")
+        logger.info(f"[STEP 2/5] Key-value pairs found: {len(extracted.get('key_value_pairs', {}))}")
+        logger.info(f"[STEP 2/5] Tables found: {len(extracted.get('tables', []))}")
         
         num_pages = extracted.get("_num_pages", 1)
         chunks_stored = 0
@@ -262,25 +282,31 @@ async def process_document(
         
         if index_document:
             # ===== CHUNKING =====
+            logger.info(f"[STEP 3/5] Starting CHUNKING...")
             chunks = chunking_service.create_chunks(
                 extracted,
                 document_id=document_id,
                 filename=file.filename
             )
+            logger.info(f"[STEP 3/5] Created {len(chunks)} chunks from document")
             
             if chunks:
                 # ===== TIER 2: Embedding =====
+                logger.info(f"[STEP 4/5] Starting EMBEDDING generation (Model: {settings.EMBEDDING_MODEL})")
                 embed_start = datetime.utcnow()
                 
                 chunk_texts = [c["text"] for c in chunks]
+                logger.info(f"[STEP 4/5] Generating embeddings for {len(chunk_texts)} chunks...")
                 embeddings = await embedding_service.generate_document_embeddings(
                     chunk_texts, show_progress=True
                 )
                 
                 embedding_time = (datetime.utcnow() - embed_start).total_seconds()
-                logger.info(f"Generated {len(embeddings)} embeddings in {embedding_time:.2f}s")
+                logger.info(f"[STEP 4/5] Embedding generation COMPLETE in {embedding_time:.2f}s")
+                logger.info(f"[STEP 4/5] Generated {len(embeddings)} embeddings (dim: {len(embeddings[0]) if embeddings else 0})")
                 
                 # ===== INDEXING =====
+                logger.info(f"[STEP 5/5] Starting INDEXING to Qdrant (Collection: {collection_name})")
                 index_start = datetime.utcnow()
                 
                 doc_metadata = {
@@ -291,6 +317,7 @@ async def process_document(
                     "document_type": extracted.get("document_type", "unknown"),
                     "processed_at": datetime.utcnow().isoformat()
                 }
+                logger.info(f"[STEP 5/5] Document metadata: {doc_metadata}")
                 
                 vector_store.add_documents(
                     collection_name=collection_name,
@@ -301,9 +328,23 @@ async def process_document(
                 
                 indexing_time = (datetime.utcnow() - index_start).total_seconds()
                 chunks_stored = len(chunks)
-                logger.info(f"Indexed {chunks_stored} chunks in {indexing_time:.2f}s")
+                logger.info(f"[STEP 5/5] Indexing COMPLETE in {indexing_time:.2f}s")
+                logger.info(f"[STEP 5/5] Stored {chunks_stored} chunks in collection '{collection_name}'")
+        else:
+            logger.info(f"[SKIP] Indexing disabled, skipping steps 3-5")
         
         total_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info("=" * 60)
+        logger.info(f"[COMPLETE] Document processing finished")
+        logger.info(f"[COMPLETE] Document ID: {document_id}")
+        logger.info(f"[COMPLETE] Total time: {total_time:.2f}s")
+        logger.info(f"[COMPLETE]   - Vision: {vision_time:.2f}s")
+        logger.info(f"[COMPLETE]   - Embedding: {embedding_time:.2f}s")
+        logger.info(f"[COMPLETE]   - Indexing: {indexing_time:.2f}s")
+        logger.info(f"[COMPLETE] Pages processed: {num_pages}")
+        logger.info(f"[COMPLETE] Chunks stored: {chunks_stored}")
+        logger.info("=" * 60)
         
         # Prepare extracted data for response
         extracted_data = {
@@ -346,13 +387,25 @@ async def query_documents(request: QueryRequest):
     """
     start_time = datetime.utcnow()
     
-    logger.info(f"Query: {request.query[:100]}...")
+    logger.info("=" * 60)
+    logger.info(f"[QUERY] Starting document query")
+    logger.info(f"[QUERY] Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}")
+    logger.info(f"[QUERY] Collection: {request.collection_name}")
+    logger.info(f"[QUERY] Top-K: {request.top_k}")
+    logger.info(f"[QUERY] Include sources: {request.include_sources}")
+    logger.info("=" * 60)
     
     try:
         # ===== TIER 2: Query Embedding =====
+        logger.info(f"[STEP 1/3] Generating query embedding (Model: {settings.EMBEDDING_MODEL})")
+        embed_start = datetime.utcnow()
         query_embedding = await embedding_service.generate_query_embedding(request.query)
+        embed_time = (datetime.utcnow() - embed_start).total_seconds()
+        logger.info(f"[STEP 1/3] Query embedding generated in {embed_time:.2f}s (dim: {len(query_embedding)})")
         
         # ===== RETRIEVAL =====
+        logger.info(f"[STEP 2/3] Retrieving relevant chunks from Qdrant...")
+        retrieve_start = datetime.utcnow()
         filter_conditions = request.filter_metadata or {}
         
         retrieved = vector_store.search(
@@ -361,8 +414,17 @@ async def query_documents(request: QueryRequest):
             top_k=request.top_k,
             filter_conditions=filter_conditions
         )
+        retrieve_time = (datetime.utcnow() - retrieve_start).total_seconds()
+        logger.info(f"[STEP 2/3] Retrieved {len(retrieved)} chunks in {retrieve_time:.2f}s")
+        
+        if retrieved:
+            for i, chunk in enumerate(retrieved[:3]):
+                score = chunk.get('score', 0)
+                text_preview = chunk.get('text', '')[:80]
+                logger.info(f"[STEP 2/3]   Chunk {i+1}: score={score:.3f}, text='{text_preview}...'")
         
         if not retrieved:
+            logger.warning(f"[STEP 2/3] No relevant documents found in collection '{request.collection_name}'")
             return QueryResponse(
                 query=request.query,
                 answer="No relevant documents found in the collection.",
@@ -373,11 +435,16 @@ async def query_documents(request: QueryRequest):
             )
         
         # ===== TIER 3: Reasoning =====
+        logger.info(f"[STEP 3/3] Generating answer with reasoning model (Model: {settings.REASONING_MODEL})")
+        reason_start = datetime.utcnow()
         result = await reasoning_service.answer_question(
             query=request.query,
             context_chunks=retrieved,
             include_sources=request.include_sources
         )
+        reason_time = (datetime.utcnow() - reason_start).total_seconds()
+        logger.info(f"[STEP 3/3] Answer generated in {reason_time:.2f}s")
+        logger.info(f"[STEP 3/3] Confidence: {result.get('confidence', 0.5):.2f}")
         
         # Format sources
         sources = []
@@ -394,6 +461,16 @@ async def query_documents(request: QueryRequest):
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
+        logger.info("=" * 60)
+        logger.info(f"[COMPLETE] Query processing finished")
+        logger.info(f"[COMPLETE] Total time: {processing_time:.2f}s")
+        logger.info(f"[COMPLETE]   - Embedding: {embed_time:.2f}s")
+        logger.info(f"[COMPLETE]   - Retrieval: {retrieve_time:.2f}s")
+        logger.info(f"[COMPLETE]   - Reasoning: {reason_time:.2f}s")
+        logger.info(f"[COMPLETE] Sources: {len(sources)}")
+        logger.info(f"[COMPLETE] Answer preview: {result['answer'][:100]}...")
+        logger.info("=" * 60)
+        
         return QueryResponse(
             query=request.query,
             answer=result["answer"],
@@ -404,7 +481,7 @@ async def query_documents(request: QueryRequest):
         )
         
     except Exception as e:
-        logger.error(f"Query failed: {str(e)}", exc_info=True)
+        logger.error(f"[ERROR] Query failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 

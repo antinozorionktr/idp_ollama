@@ -102,6 +102,12 @@ class ReasoningService:
         if max_tokens is None:
             max_tokens = settings.REASONING_MAX_TOKENS
         
+        logger.info(f"[REASON] Calling reasoning model: {self.model}")
+        logger.info(f"[REASON] Temperature: {temperature}, Max tokens: {max_tokens}")
+        logger.debug(f"[REASON] Prompt length: {len(prompt)} chars")
+        if system_prompt:
+            logger.debug(f"[REASON] System prompt length: {len(system_prompt)} chars")
+        
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -116,17 +122,38 @@ class ReasoningService:
             payload["system"] = system_prompt
         
         try:
+            logger.info(f"[REASON] Sending request to Ollama...")
+            start_time = datetime.utcnow()
+            
             response = await self.client.post(
                 "/api/generate",
                 json=payload
             )
             response.raise_for_status()
             
+            elapsed = (datetime.utcnow() - start_time).total_seconds()
             result = response.json()
-            return result.get("response", "")
+            response_text = result.get("response", "")
+            
+            logger.info(f"[REASON] Response received in {elapsed:.2f}s")
+            logger.info(f"[REASON] Response length: {len(response_text)} chars")
+            
+            # Log token usage if available
+            if "eval_count" in result:
+                logger.info(f"[REASON] Tokens generated: {result.get('eval_count')}")
+            if "prompt_eval_count" in result:
+                logger.info(f"[REASON] Prompt tokens: {result.get('prompt_eval_count')}")
+            
+            return response_text
             
         except httpx.TimeoutException:
-            logger.error(f"Reasoning model timeout after {self.timeout}s")
+            logger.error(f"[REASON] Timeout after {self.timeout}s - query may be too complex")
+            raise
+        except httpx.HTTPStatusError as e:
+            logger.error(f"[REASON] HTTP error {e.response.status_code}: {e.response.text[:200]}")
+            raise
+        except Exception as e:
+            logger.error(f"[REASON] Error: {type(e).__name__}: {e}")
             raise
         except Exception as e:
             logger.error(f"Reasoning model error: {e}")
@@ -152,15 +179,24 @@ class ReasoningService:
         Returns:
             Dict with answer, confidence, and sources
         """
+        logger.info(f"[REASON] Starting answer generation")
+        logger.info(f"[REASON] Query: '{query[:80]}...'")
+        logger.info(f"[REASON] Context chunks: {len(context_chunks)}")
+        
         start_time = datetime.utcnow()
         
         # Build context from chunks
         context_parts = []
+        total_context_len = 0
         for i, chunk in enumerate(context_chunks):
             source_info = f"[Source {i+1}: {chunk.get('filename', 'unknown')}, Page {chunk.get('page_number', '?')}]"
-            context_parts.append(f"{source_info}\n{chunk.get('text', '')}")
+            chunk_text = chunk.get('text', '')
+            context_parts.append(f"{source_info}\n{chunk_text}")
+            total_context_len += len(chunk_text)
+            logger.debug(f"[REASON]   Chunk {i+1}: {len(chunk_text)} chars, score={chunk.get('score', 0):.3f}")
         
         context = "\n\n---\n\n".join(context_parts)
+        logger.info(f"[REASON] Total context length: {total_context_len} chars")
         
         system_prompt = """You are a helpful assistant that answers questions based on provided document context.
 
@@ -181,6 +217,7 @@ Question: {query}
 Please provide a clear, accurate answer based only on the context above. Cite the source numbers when referencing specific information."""
 
         # Generate answer
+        logger.info(f"[REASON] Generating answer...")
         answer = await self._generate(prompt, system_prompt)
         
         # Calculate confidence based on retrieval scores
@@ -188,6 +225,11 @@ Please provide a clear, accurate answer based only on the context above. Cite th
         avg_score = sum(scores) / len(scores) if scores else 0.5
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info(f"[REASON] Answer generation COMPLETE")
+        logger.info(f"[REASON]   Answer length: {len(answer)} chars")
+        logger.info(f"[REASON]   Confidence: {avg_score:.3f}")
+        logger.info(f"[REASON]   Processing time: {processing_time:.2f}s")
         
         result = {
             "answer": answer.strip(),
@@ -204,12 +246,11 @@ Please provide a clear, accurate answer based only on the context above. Cite th
                     "page_number": chunk.get("page_number"),
                     "document_id": chunk.get("document_id"),
                     "filename": chunk.get("filename"),
-                    "score": chunk.get("score", 0)
+                    "score": chunk.get("score", 0),
+                    "content_type": chunk.get("content_type", "text")
                 }
                 for chunk in context_chunks
             ]
-        
-        logger.info(f"Generated answer in {processing_time:.2f}s with confidence {avg_score:.2f}")
         
         return result
     

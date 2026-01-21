@@ -208,6 +208,12 @@ Add the schema-matched data under a "structured_data" key in your response."""
         if temperature is None:
             temperature = settings.VISION_TEMPERATURE
         
+        logger.info(f"[VISION] Calling Ollama vision model: {self.model}")
+        logger.info(f"[VISION] Number of images: {len(images)}")
+        logger.info(f"[VISION] Temperature: {temperature}")
+        logger.info(f"[VISION] Max tokens: {settings.VISION_MAX_TOKENS}")
+        logger.debug(f"[VISION] Prompt length: {len(prompt)} chars")
+        
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -220,20 +226,40 @@ Add the schema-matched data under a "structured_data" key in your response."""
         }
         
         try:
+            logger.info(f"[VISION] Sending request to {self.base_url}/api/generate...")
+            start_time = datetime.utcnow()
+            
             response = await self.client.post(
                 "/api/generate",
                 json=payload
             )
             response.raise_for_status()
             
+            elapsed = (datetime.utcnow() - start_time).total_seconds()
             result = response.json()
-            return result.get("response", "")
+            response_text = result.get("response", "")
+            
+            logger.info(f"[VISION] Response received in {elapsed:.2f}s")
+            logger.info(f"[VISION] Response length: {len(response_text)} chars")
+            logger.debug(f"[VISION] Response preview: {response_text[:200]}...")
+            
+            # Log token usage if available
+            if "eval_count" in result:
+                logger.info(f"[VISION] Tokens generated: {result.get('eval_count')}")
+            if "eval_duration" in result:
+                eval_ms = result.get('eval_duration', 0) / 1e6
+                logger.info(f"[VISION] Eval duration: {eval_ms:.2f}ms")
+            
+            return response_text
             
         except httpx.TimeoutException:
-            logger.error(f"Vision model timeout after {self.timeout}s")
+            logger.error(f"[VISION] Timeout after {self.timeout}s - model may be loading or document too complex")
+            raise
+        except httpx.HTTPStatusError as e:
+            logger.error(f"[VISION] HTTP error {e.response.status_code}: {e.response.text[:200]}")
             raise
         except Exception as e:
-            logger.error(f"Vision model error: {e}")
+            logger.error(f"[VISION] Error: {type(e).__name__}: {e}")
             raise
     
     def _parse_json_response(self, response: str) -> Dict[str, Any]:

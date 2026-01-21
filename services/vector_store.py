@@ -123,11 +123,17 @@ class VectorStoreService:
         Returns:
             List of point IDs
         """
+        logger.info(f"[QDRANT] Adding documents to collection '{collection_name}'")
+        logger.info(f"[QDRANT] Chunks: {len(chunks)}, Embeddings: {len(embeddings)}")
+        logger.info(f"[QDRANT] Document ID: {document_metadata.get('document_id', 'unknown')}")
+        
         if len(chunks) != len(embeddings):
+            logger.error(f"[QDRANT] Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings")
             raise ValueError(
                 f"Chunks ({len(chunks)}) and embeddings ({len(embeddings)}) must match"
             )
         
+        logger.info(f"[QDRANT] Ensuring collection exists...")
         self.ensure_collection(collection_name)
         
         points = []
@@ -158,14 +164,18 @@ class VectorStoreService:
         
         # Batch upload
         batch_size = 100
+        total_batches = (len(points) + batch_size - 1) // batch_size
+        
         for i in range(0, len(points), batch_size):
             batch = points[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            logger.info(f"[QDRANT] Uploading batch {batch_num}/{total_batches} ({len(batch)} points)")
             self.client.upsert(
                 collection_name=collection_name,
                 points=batch
             )
         
-        logger.info(f"Added {len(points)} points to collection '{collection_name}'")
+        logger.info(f"[QDRANT] Successfully added {len(points)} points to '{collection_name}'")
         return point_ids
     
     def search(
@@ -205,6 +215,12 @@ class VectorStoreService:
             query_filter = Filter(must=must_conditions)
         
         try:
+            logger.info(f"[QDRANT] Searching collection '{collection_name}'")
+            logger.info(f"[QDRANT] Top-K: {top_k}, Score threshold: {score_threshold or settings.SIMILARITY_THRESHOLD}")
+            if filter_conditions:
+                logger.info(f"[QDRANT] Filters: {filter_conditions}")
+            
+            start_time = datetime.utcnow()
             results = self.client.query_points(
                 collection_name=collection_name,
                 query=query_embedding,
@@ -213,8 +229,12 @@ class VectorStoreService:
                 score_threshold=score_threshold or settings.SIMILARITY_THRESHOLD
             ).points
             
+            search_time = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(f"[QDRANT] Search completed in {search_time:.3f}s")
+            logger.info(f"[QDRANT] Found {len(results)} results")
+            
             formatted = []
-            for result in results:
+            for i, result in enumerate(results):
                 formatted.append({
                     "id": result.id,
                     "score": result.score,
@@ -228,12 +248,12 @@ class VectorStoreService:
                         if k not in ["text"]
                     }
                 })
+                logger.debug(f"[QDRANT]   Result {i+1}: score={result.score:.3f}, doc={result.payload.get('filename', 'unknown')}")
             
-            logger.info(f"Found {len(formatted)} results in '{collection_name}'")
             return formatted
             
         except Exception as e:
-            logger.error(f"Search error: {e}")
+            logger.error(f"[QDRANT] Search error: {e}")
             raise
     
     def delete_document(

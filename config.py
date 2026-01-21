@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # API Settings
     # ===========================================
     HOST: str = "0.0.0.0"
-    PORT: int = 8002
+    PORT: int = 8000
     DEBUG: bool = True
     
     # ===========================================
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Purpose: Document layout understanding, table extraction, structured data
     # ===========================================
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    VISION_MODEL: str = "qwen2.5-vl:7b"
+    VISION_MODEL: str = "qwen2.5vl:7b"  # Note: no hyphen in model name
     VISION_TEMPERATURE: float = 0.1
     VISION_MAX_TOKENS: int = 4096
     VISION_TIMEOUT: int = 120  # seconds - VLM can be slow on complex docs
@@ -39,16 +39,16 @@ class Settings(BaseSettings):
     # Model: nomic-embed-text
     # Purpose: Lightweight, long-context optimized embeddings
     # ===========================================
-    EMBEDDING_MODEL: str = "nomic-embed-text"
+    EMBEDDING_MODEL: str = "nomic-embed-text:latest"
     EMBEDDING_DIMENSION: int = 768  # nomic-embed-text dimension
     EMBEDDING_BATCH_SIZE: int = 32
     
     # ===========================================
     # Tier 3: Reasoning Model (The "Brain")
-    # Model: phi-4:14b or gemma3:12b (~10-14GB VRAM)
+    # Model: phi4:14b (~10-14GB VRAM)
     # Purpose: High-logic QA, synthesis, instruction following
     # ===========================================
-    REASONING_MODEL: str = "phi4:14b"  # Alternative: "gemma3:12b"
+    REASONING_MODEL: str = "phi4:14b"
     REASONING_TEMPERATURE: float = 0.2
     REASONING_MAX_TOKENS: int = 2048
     REASONING_TIMEOUT: int = 60
