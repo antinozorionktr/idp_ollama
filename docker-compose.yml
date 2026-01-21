@@ -32,33 +32,6 @@ services:
       retries: 3
 
   # ===========================================
-  # Model Initialization
-  # Pulls required models on first run
-  # ===========================================
-  ollama-init:
-    image: ollama/ollama:latest
-    container_name: idp-ollama-init
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "Pulling Tier 1: Vision Model (qwen2.5-vl:7b)..."
-        ollama pull qwen2.5-vl:7b
-        
-        echo "Pulling Tier 2: Embedding Model (nomic-embed-text)..."
-        ollama pull nomic-embed-text
-        
-        echo "Pulling Tier 3: Reasoning Model (phi4:14b)..."
-        ollama pull phi4:14b
-        
-        echo "All models ready!"
-    restart: "no"
-
-  # ===========================================
   # Qdrant - Vector Database
   # ===========================================
   qdrant:
@@ -89,7 +62,7 @@ services:
     ports:
       - "8002:8002"
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - VISION_MODEL=qwen2.5-vl:7b
@@ -130,8 +103,6 @@ services:
       - frontend
 
 volumes:
-  ollama_data:
-    driver: local
   qdrant_data:
     driver: local
 
