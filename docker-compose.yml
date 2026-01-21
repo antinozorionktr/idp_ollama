@@ -28,17 +28,23 @@ services:
     ports:
       - "8002:8002"
     environment:
-      # Ollama runs on HOST, access via host.docker.internal
+      # Ollama runs on HOST
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+
+      # Qdrant
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      # Model names must match exactly what 'ollama list' shows
+
+      # Models (MATCH ollama list EXACTLY)
       - VISION_MODEL=qwen2.5vl:7b
       - EMBEDDING_MODEL=nomic-embed-text:latest
       - REASONING_MODEL=phi4:14b
+
+      # App config
       - HOST=0.0.0.0
       - PORT=8002
       - DEBUG=true
+
     volumes:
       - ./uploads:/app/uploads
     depends_on:
@@ -48,7 +54,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   # ===========================================
-  # Streamlit Frontend (Optional)
+  # Frontend - React (Nginx)
   # ===========================================
   frontend:
     build:
@@ -57,8 +63,6 @@ services:
     container_name: idp-frontend
     ports:
       - "3000:80"
-    environment:
-      - API_BASE_URL=http://backend:8002
     depends_on:
       - backend
     restart: unless-stopped
