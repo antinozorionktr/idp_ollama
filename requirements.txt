@@ -1,0 +1,47 @@
+# ===========================================
+# IDP System v2 - Requirements
+# Three-Tier Local Model Architecture
+# ===========================================
+
+# FastAPI & Server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# HTTP Client (for Ollama)
+httpx==0.26.0
+
+# Document Processing
+PyMuPDF==1.23.8
+Pillow==10.2.0
+
+# Vector Store
+qdrant-client==1.12.0
+
+# JSON Schema Validation
+jsonschema==4.20.0
+
+# Utilities
+python-dotenv==1.0.0
+aiofiles==23.2.1
+
+# Logging
+python-json-logger==2.0.7
+
+# ===========================================
+# Optional: Cloud LLM Fallback
+# Uncomment if using cloud APIs as backup
+# ===========================================
+# anthropic==0.18.1
+# openai==1.10.0
+
+# ===========================================
+# Note: The following are NOT needed anymore
+# because we use Ollama for all AI tasks:
+# - paddleocr / paddlepaddle (replaced by qwen2.5-vl)
+# - torch / transformers (models run in Ollama)
+# - sentence-transformers (replaced by nomic-embed-text)
+# - layoutparser / detectron2 (VLM handles layout)
+# ===========================================
