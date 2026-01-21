@@ -1,12 +1,9 @@
 # ===========================================
-# IDP System v2 - Docker Compose
-# Host Ollama + Docker Backend + Qdrant
+# IDP System v2 - Docker Compose (v2)
 # ===========================================
 
 services:
-  # ===========================================
   # Qdrant - Vector Database
-  # ===========================================
   qdrant:
     image: qdrant/qdrant:latest
     container_name: idp-qdrant
@@ -17,9 +14,7 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  # ===========================================
-  # IDP Backend - FastAPI Application
-  # ===========================================
+  # IDP Backend - FastAPI
   backend:
     build:
       context: .
@@ -28,23 +23,15 @@ services:
     ports:
       - "8002:8002"
     environment:
-      # Ollama runs on HOST
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
-
-      # Qdrant
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-
-      # Models (MATCH ollama list EXACTLY)
       - VISION_MODEL=qwen2.5vl:7b
       - EMBEDDING_MODEL=nomic-embed-text:latest
       - REASONING_MODEL=phi4:14b
-
-      # App config
       - HOST=0.0.0.0
       - PORT=8002
       - DEBUG=true
-
     volumes:
       - ./uploads:/app/uploads
     depends_on:
@@ -53,19 +40,17 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # ===========================================
-  # Frontend - React (Nginx)
-  # ===========================================
+  # ReactJS Frontend
   frontend:
-  build:
-    context: ../idp_fe
-    dockerfile: Dockerfile
-    args:
-      - VITE_API_URL=http://192.168.10.35:8002
-  container_name: idp-frontend
-  ports:
-    - "3000:80"
-  restart: unless-stopped
+    build:
+      context: ../idp_fe
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://192.168.10.35:8002
+    container_name: idp-frontend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
 
 volumes:
   qdrant_data:
