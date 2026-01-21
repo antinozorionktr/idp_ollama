@@ -450,13 +450,21 @@ async def query_documents(request: QueryRequest):
         sources = []
         if request.include_sources and "sources" in result:
             for src in result["sources"]:
+                # Handle content_type safely - default to TEXT if invalid
+                raw_content_type = src.get("content_type", "text")
+                try:
+                    content_type = ContentType(raw_content_type)
+                except ValueError:
+                    # If it's a MIME type or invalid value, default to TEXT
+                    content_type = ContentType.TEXT
+                
                 sources.append(SourceChunk(
                     text=src.get("text", ""),
                     page_number=src.get("page_number", 0),
                     document_id=src.get("document_id", ""),
                     filename=src.get("filename", "unknown"),
                     score=src.get("score", 0.0),
-                    content_type=ContentType(src.get("content_type", "text"))
+                    content_type=content_type
                 ))
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()

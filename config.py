@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 200
     
     # PDF Processing
-    PDF_DPI: int = 150  # Resolution for PDF to image conversion
+    PDF_DPI: int = 100  # Lower DPI to avoid oversized images for vision model
     MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100 MB
     ALLOWED_EXTENSIONS: list = [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp"]
     

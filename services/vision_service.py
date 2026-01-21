@@ -120,7 +120,32 @@ class VisionService:
             for page_num in range(min(len(doc), settings.MAX_PAGES_PER_DOC)):
                 page = doc[page_num]
                 pix = page.get_pixmap(matrix=matrix)
-                img_bytes = pix.tobytes("png")
+                
+                # Resize if image is too large (max 1568px on longest side for qwen2.5-vl)
+                max_dim = 1568
+                width, height = pix.width, pix.height
+                
+                if width > max_dim or height > max_dim:
+                    scale = max_dim / max(width, height)
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    
+                    # Convert to PIL for resizing
+                    from PIL import Image
+                    import io
+                    
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # Convert back to bytes
+                    buffer = io.BytesIO()
+                    img.save(buffer, format="PNG")
+                    img_bytes = buffer.getvalue()
+                    
+                    logger.info(f"Resized page {page_num + 1} from {width}x{height} to {new_width}x{new_height}")
+                else:
+                    img_bytes = pix.tobytes("png")
+                
                 images.append(img_bytes)
                 
             logger.info(f"Converted PDF to {len(images)} images at {dpi} DPI")
