@@ -1,7 +1,6 @@
 # ===========================================
 # IDP System v2 - Docker Compose
 # Host Ollama + Docker Backend + Qdrant
-# NO healthchecks (as requested)
 # ===========================================
 
 services:
@@ -29,13 +28,17 @@ services:
     ports:
       - "8002:8002"
     environment:
+      # Ollama runs on HOST, access via host.docker.internal
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - VISION_MODEL=qwen2.5-vl:7b
-      - EMBEDDING_MODEL=nomic-embed-text
+      # Model names must match exactly what 'ollama list' shows
+      - VISION_MODEL=qwen2.5vl:7b
+      - EMBEDDING_MODEL=nomic-embed-text:latest
       - REASONING_MODEL=phi4:14b
-      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8002
+      - DEBUG=true
     volumes:
       - ./uploads:/app/uploads
     depends_on:

@@ -55,11 +55,25 @@ class EmbeddingService:
             response = await self.client.get("/api/tags")
             if response.status_code == 200:
                 models = response.json().get("models", [])
-                model_names = [m.get("name", "") for m in models]
-                return any(
-                    self.model in name or name.startswith(self.model.split(":")[0])
-                    for name in model_names
-                )
+                model_names = [m.get("name", "").lower() for m in models]
+                
+                target = self.model.lower()
+                target_base = target.split(":")[0]
+                
+                logger.debug(f"Looking for embedding model '{target}' in: {model_names}")
+                
+                for name in model_names:
+                    name_base = name.split(":")[0]
+                    if (target == name or 
+                        target in name or 
+                        target_base == name_base or
+                        target_base in name_base or
+                        name_base in target_base):
+                        logger.info(f"Found matching embedding model: {name}")
+                        return True
+                
+                logger.warning(f"Embedding model {self.model} not found. Available: {model_names}")
+                return False
             return False
         except Exception as e:
             logger.error(f"Error checking embedding model: {e}")

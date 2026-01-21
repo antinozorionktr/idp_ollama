@@ -507,6 +507,48 @@ async def list_schema_templates():
     }
 
 
+@app.get("/api/v1/debug/ollama", tags=["Debug"])
+async def debug_ollama():
+    """Debug endpoint to check Ollama connection and available models"""
+    import httpx
+    
+    result = {
+        "ollama_url": settings.OLLAMA_BASE_URL,
+        "configured_models": {
+            "vision": settings.VISION_MODEL,
+            "embedding": settings.EMBEDDING_MODEL,
+            "reasoning": settings.REASONING_MODEL
+        },
+        "ollama_reachable": False,
+        "available_models": [],
+        "raw_response": None,
+        "error": None
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+            result["ollama_reachable"] = response.status_code == 200
+            
+            if response.status_code == 200:
+                data = response.json()
+                result["raw_response"] = data
+                models = data.get("models", [])
+                result["available_models"] = [
+                    {"name": m.get("name"), "size": m.get("size")} 
+                    for m in models
+                ]
+            else:
+                result["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
+                
+    except httpx.ConnectError as e:
+        result["error"] = f"Connection failed: {str(e)}"
+    except Exception as e:
+        result["error"] = f"Error: {str(e)}"
+    
+    return result
+
+
 @app.post("/api/v1/classify", tags=["Utilities"])
 async def classify_document(
     file: UploadFile = File(..., description="Document to classify")

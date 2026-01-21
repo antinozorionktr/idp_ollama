@@ -60,12 +60,28 @@ class VisionService:
             response = await self.client.get("/api/tags")
             if response.status_code == 200:
                 models = response.json().get("models", [])
-                model_names = [m.get("name", "") for m in models]
-                # Check for exact match or partial match
-                return any(
-                    self.model in name or name.startswith(self.model.split(":")[0])
-                    for name in model_names
-                )
+                model_names = [m.get("name", "").lower() for m in models]
+                
+                # Normalize our model name for comparison
+                target = self.model.lower()
+                target_base = target.split(":")[0]
+                
+                logger.debug(f"Looking for model '{target}' in available models: {model_names}")
+                
+                # Check for exact match, partial match, or base name match
+                for name in model_names:
+                    name_base = name.split(":")[0]
+                    if (target == name or 
+                        target in name or 
+                        target_base == name_base or
+                        target_base in name_base or
+                        name_base in target_base):
+                        logger.info(f"Found matching model: {name} for {self.model}")
+                        return True
+                
+                logger.warning(f"Model {self.model} not found. Available: {model_names}")
+                return False
+            logger.warning(f"Ollama API returned status {response.status_code}")
             return False
         except Exception as e:
             logger.error(f"Error checking model availability: {e}")

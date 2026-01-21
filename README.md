@@ -82,7 +82,7 @@ A modern document processing system that runs **entirely locally** using state-o
 2. **Pull Required Models**
    ```bash
    # Tier 1: Vision
-   ollama pull qwen2.5vl:7b
+   ollama pull qwen2.5-vl:7b
    
    # Tier 2: Embedding
    ollama pull nomic-embed-text
