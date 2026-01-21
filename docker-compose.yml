@@ -57,17 +57,15 @@ services:
   # Frontend - React (Nginx)
   # ===========================================
   frontend:
-    build:
-      context: ../idp_fe
-      dockerfile: Dockerfile
-    container_name: idp-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
-    restart: unless-stopped
-    profiles:
-      - frontend
+  build:
+    context: ../idp_fe
+    dockerfile: Dockerfile
+    args:
+      - VITE_API_URL=http://192.168.10.35:8002
+  container_name: idp-frontend
+  ports:
+    - "3000:80"
+  restart: unless-stopped
 
 volumes:
   qdrant_data:
