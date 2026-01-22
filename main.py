@@ -122,8 +122,12 @@ async def root():
         "endpoints": {
             "process": "/api/v1/process",
             "query": "/api/v1/query",
+            "documents": "/api/v1/documents/{collection_name}",
+            "schemas": "/api/v1/schemas",
+            "collections": "/api/v1/collections",
             "health": "/health",
-            "models": "/api/v1/models"
+            "models": "/api/v1/models",
+            "config": "/api/v1/config"
         }
     }
 
@@ -410,6 +414,219 @@ async def list_collections():
     except Exception as e:
         logger.error(f"Error listing collections: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/documents/{collection_name}")
+async def list_documents(collection_name: str, limit: int = 100, offset: int = 0):
+    """List all documents in a collection"""
+    try:
+        # Get collection info
+        try:
+            collection_info = vector_store.get_collection_info(collection_name)
+        except Exception:
+            return {
+                "collection": collection_name,
+                "documents": [],
+                "total": 0,
+                "message": "Collection not found or empty"
+            }
+        
+        # Scroll through points to get unique document IDs
+        documents = {}
+        
+        # Use scroll to get all points
+        scroll_result = vector_store.client.scroll(
+            collection_name=collection_name,
+            limit=1000,  # Get a batch
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        points, next_offset = scroll_result
+        
+        for point in points:
+            doc_id = point.payload.get("document_id")
+            if doc_id and doc_id not in documents:
+                documents[doc_id] = {
+                    "document_id": doc_id,
+                    "filename": point.payload.get("filename", "unknown"),
+                    "file_type": point.payload.get("file_type", "unknown"),
+                    "uploaded_at": point.payload.get("uploaded_at", ""),
+                    "chunk_count": 0
+                }
+            if doc_id:
+                documents[doc_id]["chunk_count"] += 1
+        
+        # Convert to list and apply pagination
+        doc_list = list(documents.values())
+        total = len(doc_list)
+        paginated = doc_list[offset:offset + limit]
+        
+        return {
+            "collection": collection_name,
+            "documents": paginated,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/schemas")
+async def list_schemas():
+    """List available extraction schemas"""
+    # Default schemas for common document types
+    default_schemas = {
+        "invoice": {
+            "name": "Invoice Schema",
+            "description": "Extract data from invoices",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "invoice_number": {"type": "string"},
+                    "invoice_date": {"type": "string"},
+                    "due_date": {"type": "string"},
+                    "vendor_name": {"type": "string"},
+                    "vendor_address": {"type": "string"},
+                    "customer_name": {"type": "string"},
+                    "customer_address": {"type": "string"},
+                    "subtotal": {"type": "number"},
+                    "tax": {"type": "number"},
+                    "total": {"type": "number"},
+                    "line_items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string"},
+                                "quantity": {"type": "number"},
+                                "unit_price": {"type": "number"},
+                                "amount": {"type": "number"}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "receipt": {
+            "name": "Receipt Schema",
+            "description": "Extract data from receipts",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "merchant_name": {"type": "string"},
+                    "merchant_address": {"type": "string"},
+                    "date": {"type": "string"},
+                    "time": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "quantity": {"type": "number"},
+                                "price": {"type": "number"}
+                            }
+                        }
+                    },
+                    "subtotal": {"type": "number"},
+                    "tax": {"type": "number"},
+                    "total": {"type": "number"},
+                    "payment_method": {"type": "string"}
+                }
+            }
+        },
+        "resume": {
+            "name": "Resume Schema",
+            "description": "Extract data from resumes/CVs",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "email": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "location": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "skills": {"type": "array", "items": {"type": "string"}},
+                    "experience": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "company": {"type": "string"},
+                                "title": {"type": "string"},
+                                "start_date": {"type": "string"},
+                                "end_date": {"type": "string"},
+                                "description": {"type": "string"}
+                            }
+                        }
+                    },
+                    "education": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "institution": {"type": "string"},
+                                "degree": {"type": "string"},
+                                "field": {"type": "string"},
+                                "graduation_date": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "contract": {
+            "name": "Contract Schema",
+            "description": "Extract key terms from contracts",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "contract_type": {"type": "string"},
+                    "parties": {"type": "array", "items": {"type": "string"}},
+                    "effective_date": {"type": "string"},
+                    "expiration_date": {"type": "string"},
+                    "contract_value": {"type": "number"},
+                    "payment_terms": {"type": "string"},
+                    "key_obligations": {"type": "array", "items": {"type": "string"}},
+                    "termination_clause": {"type": "string"},
+                    "governing_law": {"type": "string"}
+                }
+            }
+        },
+        "general": {
+            "name": "General Document",
+            "description": "Generic extraction for any document",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "date": {"type": "string"},
+                    "author": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "key_points": {"type": "array", "items": {"type": "string"}},
+                    "entities": {
+                        "type": "object",
+                        "properties": {
+                            "people": {"type": "array", "items": {"type": "string"}},
+                            "organizations": {"type": "array", "items": {"type": "string"}},
+                            "locations": {"type": "array", "items": {"type": "string"}},
+                            "dates": {"type": "array", "items": {"type": "string"}},
+                            "amounts": {"type": "array", "items": {"type": "string"}}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return {
+        "schemas": default_schemas,
+        "total": len(default_schemas)
+    }
 
 
 @app.get("/api/v1/models")
