@@ -1,42 +1,31 @@
 """
-IDP System v2 - FastAPI Backend
-Three-Tier Local Model Architecture for Document Processing
-
-Tier 1: Vision (qwen2.5-vl:7b) - Document understanding
-Tier 2: Embedding (nomic-embed-text) - Vector retrieval  
-Tier 3: Reasoning (phi-4:14b) - QA synthesis
+Intelligent Document Processing (IDP) System v2.0
+FastAPI backend with:
+- Hybrid Search (Vector + BM25)
+- Retrieve-Rerank Pipeline
+- High-DPI OCR (200+)
+- Local LLMs (32B-70B via Ollama)
 """
 
-import logging
-import json
-import uuid
-from datetime import datetime
-from typing import Optional
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
 import uvicorn
+import logging
+from datetime import datetime
+import uuid
 
+from services.ocr_service import OCRService
+from services.layout_service import LayoutService
+from services.chunking_service import ChunkingService
+from services.embedding_service import EmbeddingService
+from services.vector_store import VectorStoreService
+from services.llm_service import LLMService
+from services.reranker_service import RerankerService
+from utils.validators import validate_json_output
 from config import settings
-from models.schemas import (
-    QueryRequest,
-    DocumentResponse,
-    QueryResponse,
-    ProcessingMetrics,
-    HealthResponse,
-    DocumentStatus,
-    ContentType,
-    SourceChunk,
-    SCHEMA_TEMPLATES
-)
-from services import (
-    VisionService,
-    EmbeddingService,
-    ReasoningService,
-    VectorStoreService,
-    ChunkingService
-)
 
 # Configure logging
 logging.basicConfig(
@@ -45,68 +34,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Service instances (initialized in lifespan)
-vision_service: Optional[VisionService] = None
-embedding_service: Optional[EmbeddingService] = None
-reasoning_service: Optional[ReasoningService] = None
-vector_store: Optional[VectorStoreService] = None
-chunking_service: Optional[ChunkingService] = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    global vision_service, embedding_service, reasoning_service
-    global vector_store, chunking_service
-    
-    logger.info("=" * 50)
-    logger.info("Initializing IDP System v2")
-    logger.info("=" * 50)
-    
-    vision_service = VisionService()
-    embedding_service = EmbeddingService()
-    reasoning_service = ReasoningService()
-    vector_store = VectorStoreService()
-    chunking_service = ChunkingService()
-    
-    logger.info(f"Vision Model: {settings.VISION_MODEL}")
-    logger.info(f"Embedding Model: {settings.EMBEDDING_MODEL}")
-    logger.info(f"Reasoning Model: {settings.REASONING_MODEL}")
-    logger.info("All services initialized successfully")
-    
-    yield
-    
-    logger.info("Shutting down services...")
-    if vision_service:
-        await vision_service.close()
-    if embedding_service:
-        await embedding_service.close()
-    if reasoning_service:
-        await reasoning_service.close()
-    logger.info("Shutdown complete")
-
-
+# Initialize FastAPI app
 app = FastAPI(
-    title="IDP System v2",
-    description="""
-## Intelligent Document Processing with Three-Tier Local Model Architecture
-
-### Architecture
-- **Tier 1 (Vision)**: qwen2.5-vl:7b - Document understanding & extraction
-- **Tier 2 (Embedding)**: nomic-embed-text - Vector embeddings for retrieval
-- **Tier 3 (Reasoning)**: phi-4:14b - RAG-based Q&A and synthesis
-
-### Features
-- 📄 PDF and image document processing
-- 🔍 Natural language document querying
-- 📊 Structured data extraction with custom schemas
-- 🗄️ Vector-based document storage and retrieval
-- 🚀 Fully local - no cloud API dependencies
-    """,
-    version="2.0.0",
-    lifespan=lifespan
+    title="IDP System API v2.0",
+    description="Intelligent Document Processing with Hybrid Search, Reranking & Local LLMs",
+    version="2.0.0"
 )
 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -115,554 +50,415 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize services
+logger.info("Initializing services...")
+ocr_service = OCRService()
+layout_service = LayoutService()
+chunking_service = ChunkingService()
+embedding_service = EmbeddingService()
+vector_store = VectorStoreService()
+llm_service = LLMService()
+reranker_service = RerankerService()
+logger.info("All services initialized")
 
-# ===========================================
-# Info & Health Endpoints
-# ===========================================
 
-@app.get("/", tags=["Info"])
+# Request/Response Models
+class ProcessDocumentRequest(BaseModel):
+    extraction_schema: Optional[Dict[str, Any]] = Field(
+        None, 
+        description="JSON schema for structured extraction"
+    )
+    collection_name: Optional[str] = Field(
+        "documents", 
+        description="Qdrant collection name"
+    )
+    top_k: Optional[int] = Field(5, description="Number of chunks to retrieve after reranking")
+    use_local_llm: Optional[bool] = Field(True, description="Use local LLM (Ollama) vs Cloud API")
+
+
+class DocumentResponse(BaseModel):
+    document_id: str
+    status: str
+    extracted_data: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any]
+    processing_time: float
+    chunks_stored: int
+    pipeline_version: str = "2.0"
+
+
+class QueryRequest(BaseModel):
+    query: str
+    collection_name: Optional[str] = "documents"
+    top_k: Optional[int] = 5
+    filter_metadata: Optional[Dict[str, Any]] = None
+    use_reranking: Optional[bool] = True
+    use_hybrid_search: Optional[bool] = True
+
+
+class QueryResponse(BaseModel):
+    query: str
+    answer: str
+    sources: List[Dict[str, Any]]
+    confidence: float
+    search_type: str  # "hybrid" or "dense"
+    reranked: bool
+
+
+# Health check endpoint
+@app.get("/")
 async def root():
-    """API information and available endpoints"""
+    """Root endpoint with API information"""
     return {
-        "service": "IDP System v2",
+        "service": "IDP System",
+        "status": "running",
         "version": "2.0.0",
-        "architecture": {
-            "tier1_vision": settings.VISION_MODEL,
-            "tier2_embedding": settings.EMBEDDING_MODEL,
-            "tier3_reasoning": settings.REASONING_MODEL
+        "features": {
+            "hybrid_search": settings.ENABLE_HYBRID_SEARCH,
+            "reranking": settings.ENABLE_RERANKING,
+            "ocr_dpi": settings.OCR_DPI,
+            "llm_provider": settings.LLM_PROVIDER.value,
+            "llm_model": settings.OLLAMA_MODEL if settings.LLM_PROVIDER.value == "ollama" else settings.CLAUDE_MODEL
         },
         "endpoints": {
-            "process": "POST /api/v1/process",
-            "query": "POST /api/v1/query",
-            "collections": "GET /api/v1/collections",
-            "documents": "GET /api/v1/documents/{collection}",
-            "health": "GET /health"
+            "process": "/api/v1/process",
+            "query": "/api/v1/query",
+            "health": "/health",
+            "models": "/api/v1/models"
         }
     }
 
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
+@app.get("/health")
 async def health_check():
-    """Comprehensive health check for all services"""
-    services = {}
-    models = {}
-    
-    # Check Qdrant
+    """Health check endpoint"""
     try:
-        services["qdrant"] = "operational" if vector_store.health_check() else "error"
+        # Check vector store connection
+        vector_store.health_check()
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "2.0.0",
+            "services": {
+                "ocr": f"operational ({settings.OCR_DPI} DPI)",
+                "layout_parser": "operational",
+                "embeddings": "operational",
+                "vector_store": f"operational (hybrid: {settings.ENABLE_HYBRID_SEARCH})",
+                "reranker": f"operational" if settings.ENABLE_RERANKING else "disabled",
+                "llm": f"operational ({settings.LLM_PROVIDER.value})"
+            },
+            "config": {
+                "hybrid_search": settings.ENABLE_HYBRID_SEARCH,
+                "reranking": settings.ENABLE_RERANKING,
+                "reranker_model": settings.RERANKER_MODEL if settings.ENABLE_RERANKING else None,
+                "llm_model": settings.OLLAMA_MODEL
+            }
+        }
     except Exception as e:
-        services["qdrant"] = f"error: {str(e)[:50]}"
-    
-    # Check models via Ollama
-    try:
-        models["vision"] = await vision_service.check_model_available()
-        services["vision"] = "operational" if models["vision"] else "model_missing"
-    except:
-        models["vision"] = False
-        services["vision"] = "error"
-    
-    try:
-        models["embedding"] = await embedding_service.check_model_available()
-        services["embedding"] = "operational" if models["embedding"] else "model_missing"
-    except:
-        models["embedding"] = False
-        services["embedding"] = "error"
-    
-    try:
-        models["reasoning"] = await reasoning_service.check_model_available()
-        services["reasoning"] = "operational" if models["reasoning"] else "model_missing"
-    except:
-        models["reasoning"] = False
-        services["reasoning"] = "error"
-    
-    all_healthy = all(v == "operational" for v in services.values())
-    
-    return HealthResponse(
-        status="healthy" if all_healthy else "degraded",
-        timestamp=datetime.utcnow(),
-        services=services,
-        models=models,
-        gpu_available=True,  # TODO: actual GPU check
-        vram_usage=None
-    )
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(status_code=503, detail="Service unhealthy")
 
 
-# ===========================================
-# Document Processing Endpoints
-# ===========================================
-
-@app.post("/api/v1/process", response_model=DocumentResponse, tags=["Processing"])
+@app.post("/api/v1/process", response_model=DocumentResponse)
 async def process_document(
-    file: UploadFile = File(..., description="PDF or image file to process"),
-    collection_name: str = Form(default="documents", description="Target collection"),
-    extraction_schema: Optional[str] = Form(default=None, description="JSON schema for extraction"),
-    schema_template: Optional[str] = Form(default=None, description="Use template: invoice, resume, contract"),
-    index_document: bool = Form(default=True, description="Index for RAG queries")
+    file: UploadFile = File(...),
+    extraction_schema: Optional[str] = None,
+    collection_name: str = "documents",
+    top_k: int = 5,
+    use_local_llm: bool = True
 ):
     """
-    Process a document through the complete IDP pipeline:
-    
-    1. **Vision Extraction**: qwen2.5-vl analyzes document layout and extracts content
-    2. **Chunking**: Document split into semantic chunks
-    3. **Embedding**: nomic-embed-text generates vectors
-    4. **Indexing**: Chunks stored in Qdrant for retrieval
-    
-    Supports: PDF, JPEG, PNG, TIFF, BMP
+    Process a document through the complete IDP v2 pipeline:
+    1. High-DPI OCR extraction (200+ DPI)
+    2. Layout analysis with table detection
+    3. Table-aware chunking
+    4. Embedding generation
+    5. Hybrid vector storage (dense + sparse)
+    6. Retrieve candidates
+    7. Rerank with cross-encoder
+    8. LLM-based extraction (local 32B-70B model)
+    9. JSON schema validation
     """
     start_time = datetime.utcnow()
     document_id = str(uuid.uuid4())
     
-    logger.info("=" * 60)
-    logger.info(f"[PROCESS] Starting document processing")
-    logger.info(f"[PROCESS] Document ID: {document_id}")
-    logger.info(f"[PROCESS] Filename: {file.filename}")
-    logger.info(f"[PROCESS] Content-Type: {file.content_type}")
-    logger.info(f"[PROCESS] Collection: {collection_name}")
-    logger.info(f"[PROCESS] Schema Template: {schema_template or 'None'}")
-    logger.info(f"[PROCESS] Index Document: {index_document}")
-    logger.info("=" * 60)
-    
-    # Validate file type
-    content_type = file.content_type or ""
-    valid_types = [
-        "application/pdf",
-        "image/jpeg", "image/png", "image/tiff", "image/bmp", "image/jpg"
-    ]
-    
-    if content_type not in valid_types:
-        logger.error(f"[PROCESS] Invalid file type: {content_type}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type: {content_type}. Supported: PDF, JPEG, PNG, TIFF, BMP"
-        )
+    logger.info(f"Processing document: {file.filename} (ID: {document_id})")
     
     try:
-        logger.info(f"[STEP 1/5] Reading file content...")
+        # Validate file type
+        if not file.content_type in ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'image/tiff']:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid file type. Only PDF and images are supported."
+            )
+        
+        # Read file content
         file_content = await file.read()
-        file_size = len(file_content)
-        logger.info(f"[STEP 1/5] File read complete. Size: {file_size / 1024:.2f} KB")
         
-        # Resolve schema
-        schema = None
-        if schema_template and schema_template in SCHEMA_TEMPLATES:
-            schema = SCHEMA_TEMPLATES[schema_template]
-            logger.info(f"[STEP 1/5] Using schema template: {schema_template}")
-        elif extraction_schema:
-            try:
-                schema = json.loads(extraction_schema)
-                logger.info(f"[STEP 1/5] Using custom schema")
-            except json.JSONDecodeError:
-                logger.warning("[STEP 1/5] Invalid JSON schema provided, proceeding without schema")
+        # Step 1: High-DPI OCR extraction
+        logger.info(f"Step 1: High-DPI OCR extraction ({settings.OCR_DPI} DPI) for {document_id}")
+        ocr_result = ocr_service.extract_text(
+            file_content, 
+            file.content_type
+        )
         
-        # ===== TIER 1: Vision Extraction =====
-        logger.info(f"[STEP 2/5] Starting VISION extraction (Model: {settings.VISION_MODEL})")
-        vision_start = datetime.utcnow()
+        # Step 2: Layout analysis
+        logger.info(f"Step 2: Layout analysis for {document_id}")
+        layout_result = layout_service.analyze_layout(
+            file_content,
+            file.content_type,
+            ocr_result
+        )
         
-        if content_type == "application/pdf":
-            logger.info(f"[STEP 2/5] Processing PDF document...")
-            extracted = await vision_service.extract_from_pdf(
-                file_content, schema=schema
-            )
-        else:
-            logger.info(f"[STEP 2/5] Processing image document...")
-            extracted = await vision_service.extract_from_image(
-                file_content, schema=schema
-            )
+        # Step 3: Table-aware chunking
+        logger.info(f"Step 3: Chunking for {document_id}")
+        chunks = chunking_service.create_chunks(
+            layout_result,
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP
+        )
         
-        vision_time = (datetime.utcnow() - vision_start).total_seconds()
-        logger.info(f"[STEP 2/5] Vision extraction COMPLETE in {vision_time:.2f}s")
-        logger.info(f"[STEP 2/5] Extracted document type: {extracted.get('document_type', 'unknown')}")
-        logger.info(f"[STEP 2/5] Key-value pairs found: {len(extracted.get('key_value_pairs', {}))}")
-        logger.info(f"[STEP 2/5] Tables found: {len(extracted.get('tables', []))}")
+        # Step 4: Generate embeddings
+        logger.info(f"Step 4: Generating embeddings for {len(chunks)} chunks")
+        chunk_texts = [chunk["text"] for chunk in chunks]
+        embeddings = embedding_service.generate_embeddings(chunk_texts)
         
-        num_pages = extracted.get("_num_pages", 1)
-        chunks_stored = 0
-        embedding_time = 0.0
-        indexing_time = 0.0
-        
-        if index_document:
-            # ===== CHUNKING =====
-            logger.info(f"[STEP 3/5] Starting CHUNKING...")
-            chunks = chunking_service.create_chunks(
-                extracted,
-                document_id=document_id,
-                filename=file.filename
-            )
-            logger.info(f"[STEP 3/5] Created {len(chunks)} chunks from document")
-            
-            if chunks:
-                # ===== TIER 2: Embedding =====
-                logger.info(f"[STEP 4/5] Starting EMBEDDING generation (Model: {settings.EMBEDDING_MODEL})")
-                embed_start = datetime.utcnow()
-                
-                chunk_texts = [c["text"] for c in chunks]
-                logger.info(f"[STEP 4/5] Generating embeddings for {len(chunk_texts)} chunks...")
-                embeddings = await embedding_service.generate_document_embeddings(
-                    chunk_texts, show_progress=True
-                )
-                
-                embedding_time = (datetime.utcnow() - embed_start).total_seconds()
-                logger.info(f"[STEP 4/5] Embedding generation COMPLETE in {embedding_time:.2f}s")
-                logger.info(f"[STEP 4/5] Generated {len(embeddings)} embeddings (dim: {len(embeddings[0]) if embeddings else 0})")
-                
-                # ===== INDEXING =====
-                logger.info(f"[STEP 5/5] Starting INDEXING to Qdrant (Collection: {collection_name})")
-                index_start = datetime.utcnow()
-                
-                doc_metadata = {
-                    "document_id": document_id,
-                    "filename": file.filename,
-                    "content_type": content_type,
-                    "num_pages": num_pages,
-                    "document_type": extracted.get("document_type", "unknown"),
-                    "processed_at": datetime.utcnow().isoformat()
-                }
-                logger.info(f"[STEP 5/5] Document metadata: {doc_metadata}")
-                
-                vector_store.add_documents(
-                    collection_name=collection_name,
-                    chunks=chunks,
-                    embeddings=embeddings,
-                    document_metadata=doc_metadata
-                )
-                
-                indexing_time = (datetime.utcnow() - index_start).total_seconds()
-                chunks_stored = len(chunks)
-                logger.info(f"[STEP 5/5] Indexing COMPLETE in {indexing_time:.2f}s")
-                logger.info(f"[STEP 5/5] Stored {chunks_stored} chunks in collection '{collection_name}'")
-        else:
-            logger.info(f"[SKIP] Indexing disabled, skipping steps 3-5")
-        
-        total_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        logger.info("=" * 60)
-        logger.info(f"[COMPLETE] Document processing finished")
-        logger.info(f"[COMPLETE] Document ID: {document_id}")
-        logger.info(f"[COMPLETE] Total time: {total_time:.2f}s")
-        logger.info(f"[COMPLETE]   - Vision: {vision_time:.2f}s")
-        logger.info(f"[COMPLETE]   - Embedding: {embedding_time:.2f}s")
-        logger.info(f"[COMPLETE]   - Indexing: {indexing_time:.2f}s")
-        logger.info(f"[COMPLETE] Pages processed: {num_pages}")
-        logger.info(f"[COMPLETE] Chunks stored: {chunks_stored}")
-        logger.info("=" * 60)
-        
-        # Prepare extracted data for response
-        extracted_data = {
-            "document_type": extracted.get("document_type"),
-            "key_value_pairs": extracted.get("key_value_pairs", {}),
-            "tables": extracted.get("tables", []),
-            "structured_data": extracted.get("structured_data")
+        # Step 5: Store in Qdrant with hybrid vectors
+        logger.info(f"Step 5: Storing vectors in Qdrant (hybrid: {settings.ENABLE_HYBRID_SEARCH})")
+        metadata = {
+            "document_id": document_id,
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "processed_at": datetime.utcnow().isoformat(),
+            "num_chunks": len(chunks),
+            "has_tables": layout_result.get("has_tables", False),
+            "ocr_dpi": settings.OCR_DPI,
+            "pipeline_version": "2.0"
         }
+        
+        vector_ids = vector_store.add_documents(
+            collection_name=collection_name,
+            chunks=chunks,
+            embeddings=embeddings,
+            metadata=metadata
+        )
+        
+        # Step 6: Retrieve candidates for extraction
+        logger.info(f"Step 6: Retrieving candidates (top {settings.RERANK_CANDIDATES})")
+        query_text = f"Extract all information from {file.filename}"
+        query_embedding = embedding_service.generate_embeddings([query_text])[0]
+        
+        # Get more candidates for reranking
+        candidates = vector_store.search_with_candidates(
+            collection_name=collection_name,
+            query_embedding=query_embedding,
+            query_text=query_text,
+            candidates=settings.RERANK_CANDIDATES,
+            filter_dict={"document_id": document_id}
+        )
+        
+        # Step 7: Rerank candidates
+        logger.info(f"Step 7: Reranking {len(candidates)} candidates to top {top_k}")
+        if settings.ENABLE_RERANKING:
+            retrieved_chunks = reranker_service.rerank(
+                query=query_text,
+                documents=candidates,
+                top_k=top_k
+            )
+        else:
+            retrieved_chunks = candidates[:top_k]
+        
+        # Step 8: LLM-based extraction with local model
+        logger.info(f"Step 8: LLM extraction using {settings.LLM_PROVIDER.value}")
+        context = "\n\n".join([chunk["text"] for chunk in retrieved_chunks])
+        
+        extracted_data = llm_service.extract_structured_data(
+            context=context,
+            schema=extraction_schema,
+            use_local=use_local_llm
+        )
+        
+        # Step 9: Validate JSON output
+        if extraction_schema:
+            validated_data = validate_json_output(extracted_data, extraction_schema)
+        else:
+            validated_data = extracted_data
+        
+        # Calculate processing time
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info(f"Document {document_id} processed successfully in {processing_time:.2f}s")
         
         return DocumentResponse(
             document_id=document_id,
-            status=DocumentStatus.COMPLETED,
-            filename=file.filename,
-            num_pages=num_pages,
-            extracted_data=extracted_data,
-            chunks_stored=chunks_stored,
-            metrics=ProcessingMetrics(
-                total_time=total_time,
-                vision_time=vision_time,
-                embedding_time=embedding_time,
-                indexing_time=indexing_time,
-                pages_processed=num_pages,
-                chunks_created=chunks_stored
-            )
+            status="completed",
+            extracted_data=validated_data,
+            metadata=metadata,
+            processing_time=processing_time,
+            chunks_stored=len(chunks),
+            pipeline_version="2.0"
         )
         
     except Exception as e:
-        logger.error(f"Processing failed: {str(e)}", exc_info=True)
+        logger.error(f"Error processing document {document_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
-@app.post("/api/v1/query", response_model=QueryResponse, tags=["Query"])
+@app.post("/api/v1/query", response_model=QueryResponse)
 async def query_documents(request: QueryRequest):
     """
-    Query documents using RAG (Retrieval-Augmented Generation)
-    
-    1. **Embed Query**: nomic-embed-text converts query to vector
-    2. **Retrieve**: Qdrant finds most similar chunks
-    3. **Reason**: phi-4 synthesizes answer from context
+    Query stored documents using Hybrid Search + Reranking RAG
     """
-    start_time = datetime.utcnow()
-    
-    logger.info("=" * 60)
-    logger.info(f"[QUERY] Starting document query")
-    logger.info(f"[QUERY] Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}")
-    logger.info(f"[QUERY] Collection: {request.collection_name}")
-    logger.info(f"[QUERY] Top-K: {request.top_k}")
-    logger.info(f"[QUERY] Include sources: {request.include_sources}")
-    logger.info("=" * 60)
-    
     try:
-        # ===== TIER 2: Query Embedding =====
-        logger.info(f"[STEP 1/3] Generating query embedding (Model: {settings.EMBEDDING_MODEL})")
-        embed_start = datetime.utcnow()
-        query_embedding = await embedding_service.generate_query_embedding(request.query)
-        embed_time = (datetime.utcnow() - embed_start).total_seconds()
-        logger.info(f"[STEP 1/3] Query embedding generated in {embed_time:.2f}s (dim: {len(query_embedding)})")
+        logger.info(f"Processing query: {request.query}")
         
-        # ===== RETRIEVAL =====
-        logger.info(f"[STEP 2/3] Retrieving relevant chunks from Qdrant...")
-        retrieve_start = datetime.utcnow()
-        filter_conditions = request.filter_metadata or {}
+        # Generate query embedding
+        query_embedding = embedding_service.generate_embeddings([request.query])[0]
         
-        retrieved = vector_store.search(
+        # Determine search type
+        use_hybrid = request.use_hybrid_search and settings.ENABLE_HYBRID_SEARCH
+        
+        # Step 1: Retrieve candidates (more than needed for reranking)
+        candidates_count = settings.RERANK_CANDIDATES if request.use_reranking else request.top_k
+        
+        candidates = vector_store.search_with_candidates(
             collection_name=request.collection_name,
             query_embedding=query_embedding,
-            top_k=request.top_k,
-            filter_conditions=filter_conditions
+            query_text=request.query if use_hybrid else None,
+            candidates=candidates_count,
+            filter_dict=request.filter_metadata
         )
-        retrieve_time = (datetime.utcnow() - retrieve_start).total_seconds()
-        logger.info(f"[STEP 2/3] Retrieved {len(retrieved)} chunks in {retrieve_time:.2f}s")
         
-        if retrieved:
-            for i, chunk in enumerate(retrieved[:3]):
-                score = chunk.get('score', 0)
-                text_preview = chunk.get('text', '')[:80]
-                logger.info(f"[STEP 2/3]   Chunk {i+1}: score={score:.3f}, text='{text_preview}...'")
-        
-        if not retrieved:
-            logger.warning(f"[STEP 2/3] No relevant documents found in collection '{request.collection_name}'")
-            return QueryResponse(
+        # Step 2: Rerank if enabled
+        if request.use_reranking and settings.ENABLE_RERANKING:
+            retrieved_chunks = reranker_service.rerank(
                 query=request.query,
-                answer="No relevant documents found in the collection.",
-                sources=[],
-                confidence=0.0,
-                model_used=settings.REASONING_MODEL,
-                processing_time=(datetime.utcnow() - start_time).total_seconds()
+                documents=candidates,
+                top_k=request.top_k
             )
+            reranked = True
+        else:
+            retrieved_chunks = candidates[:request.top_k]
+            reranked = False
         
-        # ===== TIER 3: Reasoning =====
-        logger.info(f"[STEP 3/3] Generating answer with reasoning model (Model: {settings.REASONING_MODEL})")
-        reason_start = datetime.utcnow()
-        result = await reasoning_service.answer_question(
+        # Build context from retrieved chunks
+        context = "\n\n".join([
+            f"[Source: {chunk['metadata'].get('filename', 'unknown')}]\n{chunk['text']}"
+            for chunk in retrieved_chunks
+        ])
+        
+        # Generate answer using LLM
+        answer = llm_service.generate_answer(
             query=request.query,
-            context_chunks=retrieved,
-            include_sources=request.include_sources
+            context=context
         )
-        reason_time = (datetime.utcnow() - reason_start).total_seconds()
-        logger.info(f"[STEP 3/3] Answer generated in {reason_time:.2f}s")
-        logger.info(f"[STEP 3/3] Confidence: {result.get('confidence', 0.5):.2f}")
         
-        # Format sources
-        sources = []
-        if request.include_sources and "sources" in result:
-            for src in result["sources"]:
-                # Handle content_type safely - default to TEXT if invalid
-                raw_content_type = src.get("content_type", "text")
-                try:
-                    content_type = ContentType(raw_content_type)
-                except ValueError:
-                    # If it's a MIME type or invalid value, default to TEXT
-                    content_type = ContentType.TEXT
-                
-                sources.append(SourceChunk(
-                    text=src.get("text", ""),
-                    page_number=src.get("page_number", 0),
-                    document_id=src.get("document_id", ""),
-                    filename=src.get("filename", "unknown"),
-                    score=src.get("score", 0.0),
-                    content_type=content_type
-                ))
-        
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        logger.info("=" * 60)
-        logger.info(f"[COMPLETE] Query processing finished")
-        logger.info(f"[COMPLETE] Total time: {processing_time:.2f}s")
-        logger.info(f"[COMPLETE]   - Embedding: {embed_time:.2f}s")
-        logger.info(f"[COMPLETE]   - Retrieval: {retrieve_time:.2f}s")
-        logger.info(f"[COMPLETE]   - Reasoning: {reason_time:.2f}s")
-        logger.info(f"[COMPLETE] Sources: {len(sources)}")
-        logger.info(f"[COMPLETE] Answer preview: {result['answer'][:100]}...")
-        logger.info("=" * 60)
+        # Calculate confidence based on relevance scores
+        if retrieved_chunks:
+            if reranked:
+                avg_score = sum(chunk.get("rerank_score", 0) for chunk in retrieved_chunks) / len(retrieved_chunks)
+                # Normalize rerank score to 0-1
+                avg_score = 1 / (1 + 2.718 ** (-avg_score))
+            else:
+                avg_score = sum(chunk.get("score", 0) for chunk in retrieved_chunks) / len(retrieved_chunks)
+        else:
+            avg_score = 0
         
         return QueryResponse(
             query=request.query,
-            answer=result["answer"],
-            sources=sources,
-            confidence=result.get("confidence", 0.5),
-            model_used=result.get("model_used", settings.REASONING_MODEL),
-            processing_time=processing_time
+            answer=answer,
+            sources=[
+                {
+                    "text": chunk["text"][:200] + "..." if len(chunk["text"]) > 200 else chunk["text"],
+                    "metadata": chunk["metadata"],
+                    "score": chunk.get("rerank_score" if reranked else "score", 0),
+                    "original_score": chunk.get("original_score", chunk.get("score", 0))
+                }
+                for chunk in retrieved_chunks
+            ],
+            confidence=avg_score,
+            search_type="hybrid" if use_hybrid else "dense",
+            reranked=reranked
         )
         
     except Exception as e:
-        logger.error(f"[ERROR] Query failed: {str(e)}", exc_info=True)
+        logger.error(f"Error processing query: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 
-# ===========================================
-# Collection Management Endpoints
-# ===========================================
+@app.delete("/api/v1/documents/{document_id}")
+async def delete_document(document_id: str, collection_name: str = "documents"):
+    """Delete a document and its chunks from the vector store"""
+    try:
+        deleted_count = vector_store.delete_document(collection_name, document_id)
+        return {
+            "status": "success",
+            "document_id": document_id,
+            "deleted_chunks": deleted_count
+        }
+    except Exception as e:
+        logger.error(f"Error deleting document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
-@app.get("/api/v1/collections", tags=["Collections"])
+
+@app.get("/api/v1/collections")
 async def list_collections():
-    """List all document collections"""
+    """List all available collections in vector store"""
     try:
         collections = vector_store.list_collections()
         return {"collections": collections}
     except Exception as e:
+        logger.error(f"Error listing collections: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/collections/{collection_name}", tags=["Collections"])
-async def get_collection_info(collection_name: str):
-    """Get detailed information about a collection"""
+@app.get("/api/v1/models")
+async def list_models():
+    """List available LLM models and current configuration"""
     try:
-        info = vector_store.get_collection_info(collection_name)
-        documents = vector_store.get_unique_documents(collection_name)
         return {
-            "collection": info,
-            "documents": documents
+            "current_config": llm_service.get_model_info(),
+            "available_models": llm_service.list_available_models(),
+            "reranker": reranker_service.get_model_info(),
+            "embedding_model": settings.EMBEDDING_MODEL
         }
     except Exception as e:
+        logger.error(f"Error listing models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/v1/collections/{collection_name}", tags=["Collections"])
-async def delete_collection(collection_name: str):
-    """Delete a collection and all its documents"""
-    try:
-        vector_store.delete_collection(collection_name)
-        return {"status": "deleted", "collection": collection_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===========================================
-# Document Management Endpoints
-# ===========================================
-
-@app.get("/api/v1/documents/{collection_name}", tags=["Documents"])
-async def list_documents(collection_name: str):
-    """List all documents in a collection"""
-    try:
-        documents = vector_store.get_unique_documents(collection_name)
-        return {"collection": collection_name, "documents": documents}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/v1/documents/{collection_name}/{document_id}", tags=["Documents"])
-async def get_document(collection_name: str, document_id: str):
-    """Get document details and chunks"""
-    try:
-        chunks = vector_store.get_document_chunks(collection_name, document_id)
-        if not chunks:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        return {
-            "document_id": document_id,
-            "collection": collection_name,
-            "chunk_count": len(chunks),
-            "chunks": chunks
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/v1/documents/{collection_name}/{document_id}", tags=["Documents"])
-async def delete_document(collection_name: str, document_id: str):
-    """Delete a document and all its chunks"""
-    try:
-        deleted = vector_store.delete_document(collection_name, document_id)
-        return {
-            "status": "deleted",
-            "document_id": document_id,
-            "chunks_deleted": deleted
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===========================================
-# Utility Endpoints
-# ===========================================
-
-@app.get("/api/v1/schemas", tags=["Utilities"])
-async def list_schema_templates():
-    """List available extraction schema templates"""
+@app.get("/api/v1/config")
+async def get_config():
+    """Get current system configuration"""
     return {
-        "templates": list(SCHEMA_TEMPLATES.keys()),
-        "schemas": SCHEMA_TEMPLATES
-    }
-
-
-@app.get("/api/v1/debug/ollama", tags=["Debug"])
-async def debug_ollama():
-    """Debug endpoint to check Ollama connection and available models"""
-    import httpx
-    
-    result = {
-        "ollama_url": settings.OLLAMA_BASE_URL,
-        "configured_models": {
-            "vision": settings.VISION_MODEL,
-            "embedding": settings.EMBEDDING_MODEL,
-            "reasoning": settings.REASONING_MODEL
+        "version": "2.0.0",
+        "search": {
+            "hybrid_enabled": settings.ENABLE_HYBRID_SEARCH,
+            "vector_weight": settings.VECTOR_SEARCH_WEIGHT,
+            "bm25_weight": 1 - settings.VECTOR_SEARCH_WEIGHT
         },
-        "ollama_reachable": False,
-        "available_models": [],
-        "raw_response": None,
-        "error": None
+        "reranking": {
+            "enabled": settings.ENABLE_RERANKING,
+            "model": settings.RERANKER_MODEL,
+            "candidates": settings.RERANK_CANDIDATES,
+            "top_k": settings.RERANK_TOP_K
+        },
+        "ocr": {
+            "dpi": settings.OCR_DPI,
+            "table_recognition": settings.OCR_ENABLE_TABLE_RECOGNITION
+        },
+        "llm": {
+            "provider": settings.LLM_PROVIDER.value,
+            "model": settings.OLLAMA_MODEL,
+            "max_tokens": settings.MAX_TOKENS,
+            "temperature": settings.TEMPERATURE
+        },
+        "chunking": {
+            "chunk_size": settings.CHUNK_SIZE,
+            "chunk_overlap": settings.CHUNK_OVERLAP
+        }
     }
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
-            result["ollama_reachable"] = response.status_code == 200
-            
-            if response.status_code == 200:
-                data = response.json()
-                result["raw_response"] = data
-                models = data.get("models", [])
-                result["available_models"] = [
-                    {"name": m.get("name"), "size": m.get("size")} 
-                    for m in models
-                ]
-            else:
-                result["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
-                
-    except httpx.ConnectError as e:
-        result["error"] = f"Connection failed: {str(e)}"
-    except Exception as e:
-        result["error"] = f"Error: {str(e)}"
-    
-    return result
 
-
-@app.post("/api/v1/classify", tags=["Utilities"])
-async def classify_document(
-    file: UploadFile = File(..., description="Document to classify")
-):
-    """Quick document classification without full processing"""
-    try:
-        content = await file.read()
-        
-        # Use first page only for classification
-        if file.content_type == "application/pdf":
-            import fitz
-            doc = fitz.open(stream=content, filetype="pdf")
-            page = doc[0]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img_bytes = pix.tobytes("png")
-            doc.close()
-        else:
-            img_bytes = content
-        
-        result = await vision_service.classify_document(img_bytes)
-        return result
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===========================================
-# Run Server
-# ===========================================
 
 if __name__ == "__main__":
     uvicorn.run(

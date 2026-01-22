@@ -1,21 +1,21 @@
 """
-IDP System v2 Services
-Three-Tier Architecture:
-- Tier 1: Vision Service (qwen2.5-vl) - Document understanding
-- Tier 2: Embedding Service (nomic-embed-text) - Vector embeddings
-- Tier 3: Reasoning Service (phi-4) - QA and synthesis
+Services module for IDP System v2.0
 """
 
-from .vision_service import VisionService
-from .embedding_service import EmbeddingService
-from .reasoning_service import ReasoningService
-from .vector_store import VectorStoreService
+from .ocr_service import OCRService
+from .layout_service import LayoutService
 from .chunking_service import ChunkingService
+from .embedding_service import EmbeddingService
+from .vector_store import VectorStoreService
+from .llm_service import LLMService
+from .reranker_service import RerankerService
 
 __all__ = [
-    "VisionService",
-    "EmbeddingService",
-    "ReasoningService",
-    "VectorStoreService",
-    "ChunkingService"
+    'OCRService',
+    'LayoutService',
+    'ChunkingService',
+    'EmbeddingService',
+    'VectorStoreService',
+    'LLMService',
+    'RerankerService'
 ]

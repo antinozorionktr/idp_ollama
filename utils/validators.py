@@ -1,177 +1,278 @@
 """
-JSON Schema Validation Utilities
+Validators for JSON Schema enforcement
 """
 
+import jsonschema
+from jsonschema import validate, ValidationError
+from typing import Dict, Any
 import logging
-from typing import Dict, Any, Optional, List, Tuple
-from jsonschema import validate, ValidationError, Draft7Validator
+import json
 
 logger = logging.getLogger(__name__)
 
 
-def validate_json_schema(
-    data: Dict[str, Any],
-    schema: Dict[str, Any]
-) -> Tuple[bool, Optional[List[str]]]:
+def validate_json_output(
+    data: Dict[str, Any], 
+    schema: Any
+) -> Dict[str, Any]:
     """
-    Validate data against a JSON schema.
+    Validate extracted data against JSON schema
     
     Args:
-        data: Data to validate
-        schema: JSON schema
+        data: Extracted data dictionary
+        schema: JSON schema (string or dict)
         
     Returns:
-        Tuple of (is_valid, list of error messages or None)
+        Validated data (same as input if valid)
+        
+    Raises:
+        ValidationError: If data doesn't match schema
     """
     try:
+        # Parse schema if string
+        if isinstance(schema, str):
+            schema = json.loads(schema)
+        
+        # Validate
         validate(instance=data, schema=schema)
-        return True, None
-    except ValidationError as e:
-        errors = []
-        validator = Draft7Validator(schema)
-        for error in validator.iter_errors(data):
-            path = " -> ".join(str(p) for p in error.absolute_path)
-            if path:
-                errors.append(f"{path}: {error.message}")
-            else:
-                errors.append(error.message)
-        return False, errors
-
-
-def coerce_to_schema(
-    data: Dict[str, Any],
-    schema: Dict[str, Any]
-) -> Dict[str, Any]:
-    """
-    Attempt to coerce data to match a schema.
-    
-    Handles common type mismatches like string numbers.
-    
-    Args:
-        data: Raw extracted data
-        schema: Target schema
         
-    Returns:
-        Coerced data
-    """
-    if not isinstance(data, dict):
+        logger.info("JSON validation successful")
         return data
-    
-    properties = schema.get("properties", {})
-    result = {}
-    
-    for key, value in data.items():
-        if key in properties:
-            prop_schema = properties[key]
-            prop_type = prop_schema.get("type")
-            
-            try:
-                if prop_type == "number" and isinstance(value, str):
-                    # Try to convert string to number
-                    value = value.replace(",", "").replace("$", "").strip()
-                    result[key] = float(value) if "." in value else int(value)
-                    
-                elif prop_type == "integer" and isinstance(value, (str, float)):
-                    result[key] = int(float(str(value).replace(",", "")))
-                    
-                elif prop_type == "string" and not isinstance(value, str):
-                    result[key] = str(value)
-                    
-                elif prop_type == "array" and isinstance(value, dict):
-                    # Single item that should be array
-                    result[key] = [value]
-                    
-                elif prop_type == "object" and isinstance(value, dict):
-                    # Recursively coerce nested objects
-                    result[key] = coerce_to_schema(value, prop_schema)
-                    
-                elif prop_type == "array" and isinstance(value, list):
-                    items_schema = prop_schema.get("items", {})
-                    result[key] = [
-                        coerce_to_schema(item, items_schema) 
-                        if isinstance(item, dict) else item
-                        for item in value
-                    ]
-                else:
-                    result[key] = value
-                    
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Could not coerce {key}: {e}")
-                result[key] = value
-        else:
-            result[key] = value
-    
-    return result
+        
+    except ValidationError as e:
+        logger.error(f"JSON validation failed: {str(e)}")
+        raise ValueError(f"Data does not match schema: {str(e)}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid schema: {str(e)}")
+        raise ValueError(f"Invalid JSON schema: {str(e)}")
 
 
-def extract_required_fields(
-    data: Dict[str, Any],
-    schema: Dict[str, Any]
-) -> Dict[str, Any]:
+def create_example_schemas() -> Dict[str, Dict[str, Any]]:
     """
-    Extract only the fields defined in the schema.
+    Example schemas for common document types
+    
+    Returns:
+        Dictionary of schema name to schema definition
+    """
+    return {
+        "invoice": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {"type": "string"},
+                "date": {"type": "string", "format": "date"},
+                "vendor": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "address": {"type": "string"},
+                        "email": {"type": "string", "format": "email"}
+                    },
+                    "required": ["name"]
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": "number"},
+                            "total": {"type": "number"}
+                        },
+                        "required": ["description", "quantity", "unit_price"]
+                    }
+                },
+                "subtotal": {"type": "number"},
+                "tax": {"type": "number"},
+                "total": {"type": "number"}
+            },
+            "required": ["invoice_number", "date", "vendor", "items", "total"]
+        },
+        
+        "contract": {
+            "type": "object",
+            "properties": {
+                "contract_id": {"type": "string"},
+                "title": {"type": "string"},
+                "effective_date": {"type": "string", "format": "date"},
+                "expiration_date": {"type": "string", "format": "date"},
+                "parties": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "role": {"type": "string"},
+                            "address": {"type": "string"}
+                        },
+                        "required": ["name", "role"]
+                    }
+                },
+                "terms": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "payment_terms": {"type": "string"},
+                "renewal_terms": {"type": "string"}
+            },
+            "required": ["contract_id", "effective_date", "parties"]
+        },
+        
+        "resume": {
+            "type": "object",
+            "properties": {
+                "personal_info": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "email": {"type": "string", "format": "email"},
+                        "phone": {"type": "string"},
+                        "location": {"type": "string"}
+                    },
+                    "required": ["name", "email"]
+                },
+                "summary": {"type": "string"},
+                "experience": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "company": {"type": "string"},
+                            "location": {"type": "string"},
+                            "start_date": {"type": "string"},
+                            "end_date": {"type": "string"},
+                            "description": {"type": "string"}
+                        },
+                        "required": ["title", "company"]
+                    }
+                },
+                "education": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "degree": {"type": "string"},
+                            "institution": {"type": "string"},
+                            "graduation_date": {"type": "string"}
+                        },
+                        "required": ["degree", "institution"]
+                    }
+                },
+                "skills": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["personal_info", "experience"]
+        },
+        
+        "medical_report": {
+            "type": "object",
+            "properties": {
+                "patient_info": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "date_of_birth": {"type": "string", "format": "date"},
+                        "patient_id": {"type": "string"}
+                    },
+                    "required": ["name"]
+                },
+                "report_date": {"type": "string", "format": "date"},
+                "diagnosis": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "medications": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "dosage": {"type": "string"},
+                            "frequency": {"type": "string"}
+                        },
+                        "required": ["name"]
+                    }
+                },
+                "lab_results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "test_name": {"type": "string"},
+                            "result": {"type": "string"},
+                            "reference_range": {"type": "string"}
+                        }
+                    }
+                },
+                "notes": {"type": "string"}
+            },
+            "required": ["patient_info", "report_date"]
+        },
+        
+        "financial_statement": {
+            "type": "object",
+            "properties": {
+                "company_name": {"type": "string"},
+                "period": {
+                    "type": "object",
+                    "properties": {
+                        "start_date": {"type": "string", "format": "date"},
+                        "end_date": {"type": "string", "format": "date"}
+                    },
+                    "required": ["start_date", "end_date"]
+                },
+                "revenue": {"type": "number"},
+                "expenses": {
+                    "type": "object",
+                    "properties": {
+                        "operating": {"type": "number"},
+                        "administrative": {"type": "number"},
+                        "other": {"type": "number"}
+                    }
+                },
+                "net_income": {"type": "number"},
+                "assets": {
+                    "type": "object",
+                    "properties": {
+                        "current": {"type": "number"},
+                        "fixed": {"type": "number"},
+                        "total": {"type": "number"}
+                    }
+                },
+                "liabilities": {
+                    "type": "object",
+                    "properties": {
+                        "current": {"type": "number"},
+                        "long_term": {"type": "number"},
+                        "total": {"type": "number"}
+                    }
+                }
+            },
+            "required": ["company_name", "period", "revenue", "net_income"]
+        }
+    }
+
+
+def get_schema_by_name(schema_name: str) -> Dict[str, Any]:
+    """
+    Get a predefined schema by name
     
     Args:
-        data: Full extracted data
-        schema: Schema defining required fields
+        schema_name: Name of the schema (e.g., 'invoice', 'contract')
         
     Returns:
-        Filtered data with only schema fields
+        Schema definition
     """
-    properties = schema.get("properties", {})
-    result = {}
+    schemas = create_example_schemas()
     
-    for key in properties:
-        if key in data:
-            prop_schema = properties[key]
-            value = data[key]
-            
-            if prop_schema.get("type") == "object" and isinstance(value, dict):
-                result[key] = extract_required_fields(value, prop_schema)
-            elif prop_schema.get("type") == "array" and isinstance(value, list):
-                items_schema = prop_schema.get("items", {})
-                if items_schema.get("type") == "object":
-                    result[key] = [
-                        extract_required_fields(item, items_schema)
-                        for item in value if isinstance(item, dict)
-                    ]
-                else:
-                    result[key] = value
-            else:
-                result[key] = value
+    if schema_name not in schemas:
+        available = ", ".join(schemas.keys())
+        raise ValueError(
+            f"Schema '{schema_name}' not found. "
+            f"Available schemas: {available}"
+        )
     
-    return result
-
-
-def merge_extracted_data(
-    existing: Dict[str, Any],
-    new: Dict[str, Any],
-    schema: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Merge extracted data from multiple pages/sources.
-    
-    Args:
-        existing: Existing data
-        new: New data to merge
-        schema: Optional schema for type-aware merging
-        
-    Returns:
-        Merged data
-    """
-    result = existing.copy()
-    
-    for key, value in new.items():
-        if key not in result:
-            result[key] = value
-        elif isinstance(result[key], list) and isinstance(value, list):
-            # Extend arrays
-            result[key].extend(value)
-        elif isinstance(result[key], dict) and isinstance(value, dict):
-            # Recursively merge objects
-            result[key] = merge_extracted_data(result[key], value)
-        elif result[key] is None:
-            result[key] = value
-        # Otherwise keep existing value
-    
-    return result
+    return schemas[schema_name]

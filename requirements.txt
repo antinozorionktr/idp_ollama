@@ -1,47 +1,54 @@
-# ===========================================
-# IDP System v2 - Requirements
-# Three-Tier Local Model Architecture
-# ===========================================
+# IDP System v2.0 Requirements
+# Upgraded with Hybrid Search, Reranking, and Local LLMs
 
-# FastAPI & Server
+# Core Framework
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-python-multipart==0.0.6
 pydantic==2.5.3
 pydantic-settings==2.1.0
+python-multipart==0.0.6
 
-# HTTP Client (for Ollama)
-httpx==0.26.0
-
-# Document Processing
+# OCR & Vision (High DPI)
+paddlepaddle-gpu==2.6.0  # Use paddlepaddle for CPU-only
+paddleocr==2.7.0
+pdf2image==1.16.3
 PyMuPDF==1.23.8
 Pillow==10.2.0
+opencv-python==4.9.0.80
 
-# Vector Store
-qdrant-client==1.12.0
+# Layout Analysis
+layoutparser==0.3.4
+detectron2  # Install from: pip install 'git+https://github.com/facebookresearch/detectron2.git'
 
-# JSON Schema Validation
-jsonschema==4.20.0
+# Embeddings
+sentence-transformers==2.3.1
+torch>=2.1.0
+
+# Vector Store (Qdrant)
+qdrant-client==1.7.0
+
+# Reranking (NEW)
+# Uses sentence-transformers CrossEncoder
+
+# LLM Clients
+anthropic==0.18.1
+openai==1.12.0
+httpx==0.26.0  # For Ollama/vLLM calls
+
+# Schema Validation
+jsonschema==4.21.1
+
+# Caching (Optional)
+redis==5.0.1
 
 # Utilities
-python-dotenv==1.0.0
-aiofiles==23.2.1
+numpy>=1.24.0
+pandas>=2.0.0
+python-dotenv==1.0.1
+tqdm==4.66.1
 
-# Logging
-python-json-logger==2.0.7
-
-# ===========================================
-# Optional: Cloud LLM Fallback
-# Uncomment if using cloud APIs as backup
-# ===========================================
-# anthropic==0.18.1
-# openai==1.10.0
-
-# ===========================================
-# Note: The following are NOT needed anymore
-# because we use Ollama for all AI tasks:
-# - paddleocr / paddlepaddle (replaced by qwen2.5-vl)
-# - torch / transformers (models run in Ollama)
-# - sentence-transformers (replaced by nomic-embed-text)
-# - layoutparser / detectron2 (VLM handles layout)
-# ===========================================
+# Development
+pytest==8.0.0
+pytest-asyncio==0.23.4
+black==24.1.1
+isort==5.13.2

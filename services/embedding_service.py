@@ -1,322 +1,165 @@
 """
-Tier 2: Embedding Service (The "Memory")
-Uses nomic-embed-text for lightweight, long-context optimized embeddings
-
-Key features:
-- Optimized for retrieval tasks
-- Handles long documents efficiently
-- Runs locally via Ollama
-- Low VRAM footprint
+Embedding Service using bge-large-en-v1.5
 """
 
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from typing import List, Dict, Any
 import logging
-from typing import List, Optional
-import httpx
-import asyncio
-from datetime import datetime
-
+import torch
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    """
-    Embedding service using nomic-embed-text via Ollama.
-    Generates vector embeddings for document chunks.
-    """
-    
     def __init__(self):
-        self.base_url = settings.OLLAMA_BASE_URL
-        self.model = settings.EMBEDDING_MODEL
-        self.dimension = settings.EMBEDDING_DIMENSION
-        self.batch_size = settings.EMBEDDING_BATCH_SIZE
-        self._client: Optional[httpx.AsyncClient] = None
-        logger.info(f"EmbeddingService initialized with model: {self.model}")
-    
-    @property
-    def client(self) -> httpx.AsyncClient:
-        """Lazy initialization of async HTTP client"""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=httpx.Timeout(60.0)
-            )
-        return self._client
-    
-    async def close(self):
-        """Close the HTTP client"""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-    
-    async def check_model_available(self) -> bool:
-        """Check if the embedding model is available"""
+        """Initialize BGE embedding model"""
         try:
-            response = await self.client.get("/api/tags")
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                model_names = [m.get("name", "").lower() for m in models]
-                
-                target = self.model.lower()
-                target_base = target.split(":")[0]
-                
-                logger.debug(f"Looking for embedding model '{target}' in: {model_names}")
-                
-                for name in model_names:
-                    name_base = name.split(":")[0]
-                    if (target == name or 
-                        target in name or 
-                        target_base == name_base or
-                        target_base in name_base or
-                        name_base in target_base):
-                        logger.info(f"Found matching embedding model: {name}")
-                        return True
-                
-                logger.warning(f"Embedding model {self.model} not found. Available: {model_names}")
-                return False
-            return False
-        except Exception as e:
-            logger.error(f"Error checking embedding model: {e}")
-            return False
-    
-    async def generate_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding for a single text.
-        
-        Args:
-            text: Input text to embed
-            
-        Returns:
-            Embedding vector as list of floats
-        """
-        if not text or not text.strip():
-            logger.warning("[EMBED] Empty text provided for embedding")
-            return [0.0] * self.dimension
-        
-        logger.debug(f"[EMBED] Generating embedding for text ({len(text)} chars)")
-        
-        payload = {
-            "model": self.model,
-            "prompt": text
-        }
-        
-        try:
-            start_time = datetime.utcnow()
-            response = await self.client.post(
-                "/api/embeddings",
-                json=payload
+            # Load BGE model
+            self.model = SentenceTransformer(
+                settings.EMBEDDING_MODEL,
+                device=settings.EMBEDDING_DEVICE
             )
-            response.raise_for_status()
             
-            elapsed = (datetime.utcnow() - start_time).total_seconds()
-            result = response.json()
-            embedding = result.get("embedding", [])
+            # Verify embedding dimension
+            test_embedding = self.model.encode(["test"], show_progress_bar=False)
+            actual_dim = test_embedding.shape[1]
             
-            logger.debug(f"[EMBED] Embedding generated in {elapsed:.3f}s (dim: {len(embedding)})")
-            
-            if len(embedding) != self.dimension:
+            if actual_dim != settings.EMBEDDING_DIMENSION:
                 logger.warning(
-                    f"[EMBED] Unexpected embedding dimension: {len(embedding)} "
-                    f"(expected {self.dimension})"
+                    f"Embedding dimension mismatch: expected {settings.EMBEDDING_DIMENSION}, "
+                    f"got {actual_dim}. Updating setting."
                 )
+                settings.EMBEDDING_DIMENSION = actual_dim
             
-            return embedding
+            logger.info(
+                f"Embedding model initialized: {settings.EMBEDDING_MODEL} "
+                f"(dimension: {settings.EMBEDDING_DIMENSION})"
+            )
             
         except Exception as e:
-            logger.error(f"[EMBED] Embedding generation failed: {e}")
+            logger.error(f"Failed to initialize embedding model: {str(e)}")
             raise
     
-    async def generate_embeddings(
-        self,
+    def generate_embeddings(
+        self, 
         texts: List[str],
+        batch_size: int = None,
         show_progress: bool = False
     ) -> List[List[float]]:
         """
-        Generate embeddings for multiple texts.
-        
-        Processes in batches for efficiency.
+        Generate embeddings for a list of texts
         
         Args:
-            texts: List of texts to embed
-            show_progress: Whether to log progress
+            texts: List of text strings to embed
+            batch_size: Batch size for encoding
+            show_progress: Whether to show progress bar
             
         Returns:
             List of embedding vectors
         """
         if not texts:
-            logger.warning("[EMBED] No texts provided for batch embedding")
             return []
         
-        logger.info(f"[EMBED] Starting batch embedding for {len(texts)} texts")
-        logger.info(f"[EMBED] Batch size: {self.batch_size}")
-        logger.info(f"[EMBED] Model: {self.model}")
+        # Clean texts
+        texts = [self._clean_text(text) for text in texts]
         
-        start_time = datetime.utcnow()
-        all_embeddings = []
-        total = len(texts)
+        # Set batch size
+        if batch_size is None:
+            batch_size = settings.BATCH_SIZE
         
-        # Process in batches
-        for i in range(0, total, self.batch_size):
-            batch = texts[i:i + self.batch_size]
-            batch_num = i // self.batch_size + 1
-            total_batches = (total + self.batch_size - 1) // self.batch_size
+        try:
+            # Generate embeddings
+            embeddings = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=show_progress,
+                convert_to_numpy=True,
+                normalize_embeddings=True  # Normalize for cosine similarity
+            )
             
-            logger.info(f"[EMBED] Processing batch {batch_num}/{total_batches} ({len(batch)} texts)")
-            batch_start = datetime.utcnow()
+            # Convert to list of lists
+            embeddings_list = embeddings.tolist()
             
-            # Generate embeddings concurrently within batch
-            tasks = [self.generate_embedding(text) for text in batch]
-            batch_embeddings = await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info(f"Generated {len(embeddings_list)} embeddings")
+            return embeddings_list
             
-            batch_elapsed = (datetime.utcnow() - batch_start).total_seconds()
-            
-            # Handle any errors
-            errors = 0
-            for j, emb in enumerate(batch_embeddings):
-                if isinstance(emb, Exception):
-                    logger.error(f"[EMBED] Error for text {i+j}: {emb}")
-                    # Use zero vector as fallback
-                    all_embeddings.append([0.0] * self.dimension)
-                    errors += 1
-                else:
-                    all_embeddings.append(emb)
-            
-            processed = min(i + self.batch_size, total)
-            logger.info(f"[EMBED] Batch {batch_num} complete in {batch_elapsed:.2f}s ({errors} errors)")
-            
-            if show_progress:
-                logger.info(f"[EMBED] Progress: {processed}/{total} texts ({100*processed/total:.1f}%)")
-        
-        duration = (datetime.utcnow() - start_time).total_seconds()
-        rate = len(all_embeddings) / duration if duration > 0 else 0
-        
-        logger.info(f"[EMBED] Batch embedding COMPLETE")
-        logger.info(f"[EMBED]   Total: {len(all_embeddings)} embeddings")
-        logger.info(f"[EMBED]   Duration: {duration:.2f}s")
-        logger.info(f"[EMBED]   Rate: {rate:.1f} texts/sec")
-        
-        return all_embeddings
+        except Exception as e:
+            logger.error(f"Error generating embeddings: {str(e)}")
+            raise
     
-    async def generate_query_embedding(self, query: str) -> List[float]:
+    def generate_query_embedding(self, query: str) -> List[float]:
         """
-        Generate embedding for a search query.
+        Generate embedding for a single query
         
-        Note: nomic-embed-text uses the same model for documents and queries,
-        but we keep this separate method for API consistency and potential
-        future query-specific preprocessing.
-        
-        Args:
-            query: Search query text
-            
-        Returns:
-            Query embedding vector
+        BGE models use special instructions for queries vs passages
         """
-        logger.info(f"[EMBED] Generating query embedding for: '{query[:50]}...'")
-        # nomic-embed-text benefits from a search prefix for queries
-        # This helps differentiate query intent from document content
-        prefixed_query = f"search_query: {query}"
-        embedding = await self.generate_embedding(prefixed_query)
-        logger.info(f"[EMBED] Query embedding generated (dim: {len(embedding)})")
-        return embedding
+        # Add BGE query instruction
+        query_with_instruction = f"Represent this sentence for searching relevant passages: {query}"
+        
+        embedding = self.model.encode(
+            [query_with_instruction],
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        )
+        
+        return embedding[0].tolist()
     
-    async def generate_document_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding for a document chunk.
+    def _clean_text(self, text: str) -> str:
+        """Clean and preprocess text"""
+        if not text:
+            return ""
         
-        Args:
-            text: Document text to embed
-            
-        Returns:
-            Document embedding vector
-        """
-        # nomic-embed-text benefits from a document prefix
-        prefixed_text = f"search_document: {text}"
-        return await self.generate_embedding(prefixed_text)
-    
-    async def generate_document_embeddings(
-        self,
-        texts: List[str],
-        show_progress: bool = False
-    ) -> List[List[float]]:
-        """
-        Generate embeddings for multiple document chunks with proper prefix.
+        # Remove excessive whitespace
+        text = " ".join(text.split())
         
-        Args:
-            texts: List of document texts
-            show_progress: Whether to log progress
-            
-        Returns:
-            List of embedding vectors
-        """
-        prefixed_texts = [f"search_document: {text}" for text in texts]
-        return await self.generate_embeddings(prefixed_texts, show_progress)
+        # Truncate if too long (BGE has max length)
+        max_length = 512  # BGE max token length
+        words = text.split()
+        if len(words) > max_length:
+            text = " ".join(words[:max_length])
+        
+        return text
     
-    def cosine_similarity(
-        self,
-        embedding1: List[float],
+    def compute_similarity(
+        self, 
+        embedding1: List[float], 
         embedding2: List[float]
     ) -> float:
         """
-        Calculate cosine similarity between two embeddings.
+        Compute cosine similarity between two embeddings
         
-        Args:
-            embedding1: First embedding vector
-            embedding2: Second embedding vector
-            
-        Returns:
-            Cosine similarity score (0-1)
+        Since embeddings are normalized, dot product = cosine similarity
         """
-        import math
-        
-        if len(embedding1) != len(embedding2):
-            raise ValueError("Embeddings must have same dimension")
-        
-        dot_product = sum(a * b for a, b in zip(embedding1, embedding2))
-        norm1 = math.sqrt(sum(a * a for a in embedding1))
-        norm2 = math.sqrt(sum(b * b for b in embedding2))
-        
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        
-        return dot_product / (norm1 * norm2)
+        return float(np.dot(embedding1, embedding2))
     
-    async def find_most_similar(
-        self,
-        query: str,
-        candidates: List[str],
-        top_k: int = 5
-    ) -> List[dict]:
+    def batch_similarity(
+        self, 
+        query_embedding: List[float], 
+        doc_embeddings: List[List[float]]
+    ) -> List[float]:
         """
-        Find most similar texts to a query from a list of candidates.
-        
-        This is useful for quick similarity search without a vector database.
-        
-        Args:
-            query: Query text
-            candidates: List of candidate texts
-            top_k: Number of results to return
-            
-        Returns:
-            List of dicts with 'text', 'score', 'index'
+        Compute similarity between a query and multiple documents
         """
-        if not candidates:
-            return []
+        query_np = np.array(query_embedding)
+        docs_np = np.array(doc_embeddings)
         
-        # Generate embeddings
-        query_emb = await self.generate_query_embedding(query)
-        candidate_embs = await self.generate_document_embeddings(candidates)
+        # Dot product for normalized vectors
+        similarities = np.dot(docs_np, query_np)
         
-        # Calculate similarities
-        similarities = []
-        for i, (text, emb) in enumerate(zip(candidates, candidate_embs)):
-            score = self.cosine_similarity(query_emb, emb)
-            similarities.append({
-                "text": text,
-                "score": score,
-                "index": i
-            })
-        
-        # Sort by score descending
-        similarities.sort(key=lambda x: x["score"], reverse=True)
-        
-        return similarities[:top_k]
+        return similarities.tolist()
+    
+    def get_embedding_dimension(self) -> int:
+        """Get the dimension of embeddings"""
+        return settings.EMBEDDING_DIMENSION
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the embedding model"""
+        return {
+            "model_name": settings.EMBEDDING_MODEL,
+            "dimension": settings.EMBEDDING_DIMENSION,
+            "device": settings.EMBEDDING_DEVICE,
+            "max_sequence_length": self.model.max_seq_length
+        }
