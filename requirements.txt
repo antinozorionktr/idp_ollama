@@ -1,53 +1,50 @@
 # IDP System v2.0 Requirements
-# Upgraded with Hybrid Search, Reranking, and Local LLMs
+# Unpinned (pip will resolve compatible versions)
 
 # Core Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
-python-multipart==0.0.6
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
 
-# OCR & Vision (High DPI)
-paddlepaddle-gpu==2.6.0  # Use paddlepaddle for CPU-only
-paddleocr==2.7.0
-pdf2image==1.16.3
-PyMuPDF==1.20.2
-Pillow==10.2.0
-opencv-python==4.6.0.66
+# OCR & Vision
+paddlepaddle-gpu
+paddleocr
+pdf2image
+PyMuPDF
+Pillow
+opencv-python
 
 # Layout Analysis
-layoutparser==0.3.4
+layoutparser
 
 # Embeddings
-sentence-transformers==2.3.1
-torch>=2.1.0
+sentence-transformers
+torch
 
-# Vector Store (Qdrant)
-qdrant-client==1.7.0
-
-# Reranking (NEW)
-# Uses sentence-transformers CrossEncoder
+# Vector Store
+qdrant-client
 
 # LLM Clients
-anthropic==0.18.1
-openai==1.12.0
-httpx==0.26.0  # For Ollama/vLLM calls
+anthropic
+openai
+httpx
 
 # Schema Validation
-jsonschema==4.21.1
+jsonschema
 
-# Caching (Optional)
-redis==5.0.1
+# Caching
+redis
 
 # Utilities
-numpy>=1.24.0
-pandas>=2.0.0
-python-dotenv==1.0.1
-tqdm==4.66.1
+numpy
+pandas
+python-dotenv
+tqdm
 
-# Development
-pytest==8.0.0
-pytest-asyncio==0.23.4
-black==24.1.1
-isort==5.13.2
+# Development (consider moving to requirements-dev.txt)
+pytest
+pytest-asyncio
+black
+isort
