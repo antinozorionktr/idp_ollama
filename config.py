@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     
     # ==================== RERANKING (NEW) ====================
     ENABLE_RERANKING: bool = True
-    # Reranker model - cross-encoder for better relevance
-    RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"  # or "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    # Reranker model - using Ollama's reranker model
+    RERANKER_MODEL: str = "qllama/bge-reranker-v2-m3"  # Ollama model name
     RERANKER_DEVICE: str = "cuda"
     # Retrieve more candidates, then rerank to top_k
     RERANK_CANDIDATES: int = 20  # Retrieve 20, rerank to top 5
