@@ -677,6 +677,187 @@ async def get_config():
     }
 
 
+@app.get("/api/v1/debug/ollama")
+async def debug_ollama():
+    """Debug endpoint to check Ollama connection and available models"""
+    import httpx
+    
+    result = {
+        "ollama_base_url": settings.OLLAMA_BASE_URL,
+        "configured_models": {
+            "llm": settings.OLLAMA_MODEL,
+            "embedding": settings.EMBEDDING_MODEL,
+            "vision": settings.VISION_MODEL if settings.ENABLE_VISION_LLM else None,
+            "reranker": settings.RERANKER_MODEL if settings.ENABLE_RERANKING else None
+        },
+        "connection_status": "unknown",
+        "available_models": [],
+        "model_status": {},
+        "errors": []
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Check Ollama connection
+            try:
+                response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+                if response.status_code == 200:
+                    result["connection_status"] = "connected"
+                    data = response.json()
+                    models = data.get("models", [])
+                    result["available_models"] = [
+                        {
+                            "name": m.get("name"),
+                            "size": m.get("size"),
+                            "modified_at": m.get("modified_at"),
+                            "digest": m.get("digest", "")[:12] + "..."
+                        }
+                        for m in models
+                    ]
+                    
+                    # Check if configured models are available
+                    model_names = [m.get("name", "").split(":")[0] for m in models]
+                    full_model_names = [m.get("name", "") for m in models]
+                    
+                    for model_type, model_name in result["configured_models"].items():
+                        if model_name:
+                            # Check both exact match and base name match
+                            base_name = model_name.split(":")[0]
+                            if model_name in full_model_names:
+                                result["model_status"][model_type] = {
+                                    "model": model_name,
+                                    "status": "available",
+                                    "message": "Model found"
+                                }
+                            elif base_name in model_names:
+                                available_version = next(
+                                    (m for m in full_model_names if m.startswith(base_name)), 
+                                    None
+                                )
+                                result["model_status"][model_type] = {
+                                    "model": model_name,
+                                    "status": "version_mismatch",
+                                    "message": f"Base model found, available: {available_version}"
+                                }
+                            else:
+                                result["model_status"][model_type] = {
+                                    "model": model_name,
+                                    "status": "not_found",
+                                    "message": f"Model not found. Run: ollama pull {model_name}"
+                                }
+                else:
+                    result["connection_status"] = "error"
+                    result["errors"].append(f"Ollama returned status {response.status_code}")
+                    
+            except httpx.ConnectError as e:
+                result["connection_status"] = "disconnected"
+                result["errors"].append(f"Cannot connect to Ollama at {settings.OLLAMA_BASE_URL}: {str(e)}")
+            except httpx.TimeoutException:
+                result["connection_status"] = "timeout"
+                result["errors"].append("Connection to Ollama timed out")
+            
+            # Test embedding endpoint
+            if result["connection_status"] == "connected":
+                try:
+                    embed_response = await client.post(
+                        f"{settings.OLLAMA_BASE_URL}/api/embed",
+                        json={"model": settings.EMBEDDING_MODEL, "input": "test"},
+                        timeout=30.0
+                    )
+                    if embed_response.status_code == 200:
+                        embed_data = embed_response.json()
+                        if "embeddings" in embed_data or "embedding" in embed_data:
+                            dim = len(embed_data.get("embeddings", [embed_data.get("embedding", [])])[0])
+                            result["embedding_test"] = {
+                                "status": "success",
+                                "dimension": dim,
+                                "configured_dimension": settings.EMBEDDING_DIMENSION,
+                                "match": dim == settings.EMBEDDING_DIMENSION
+                            }
+                    else:
+                        result["embedding_test"] = {
+                            "status": "failed",
+                            "error": f"Status {embed_response.status_code}: {embed_response.text[:200]}"
+                        }
+                except Exception as e:
+                    result["embedding_test"] = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    
+    except Exception as e:
+        result["errors"].append(f"Debug check failed: {str(e)}")
+    
+    return result
+
+
+@app.get("/api/v1/debug/services")
+async def debug_services():
+    """Debug endpoint to check all service statuses"""
+    services_status = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "services": {}
+    }
+    
+    # Check OCR Service
+    try:
+        services_status["services"]["ocr"] = {
+            "status": "operational",
+            "dpi": settings.OCR_DPI,
+            "gpu": settings.PADDLE_OCR_USE_GPU
+        }
+    except Exception as e:
+        services_status["services"]["ocr"] = {"status": "error", "error": str(e)}
+    
+    # Check Embedding Service
+    try:
+        info = embedding_service.get_model_info()
+        services_status["services"]["embedding"] = {
+            "status": "operational",
+            **info
+        }
+    except Exception as e:
+        services_status["services"]["embedding"] = {"status": "error", "error": str(e)}
+    
+    # Check Vector Store
+    try:
+        vector_store.health_check()
+        collections = vector_store.list_collections()
+        services_status["services"]["vector_store"] = {
+            "status": "operational",
+            "host": f"{settings.QDRANT_HOST}:{settings.QDRANT_PORT}",
+            "collections": collections,
+            "hybrid_enabled": settings.ENABLE_HYBRID_SEARCH
+        }
+    except Exception as e:
+        services_status["services"]["vector_store"] = {"status": "error", "error": str(e)}
+    
+    # Check LLM Service
+    try:
+        info = llm_service.get_model_info()
+        services_status["services"]["llm"] = {
+            "status": "operational",
+            **info
+        }
+    except Exception as e:
+        services_status["services"]["llm"] = {"status": "error", "error": str(e)}
+    
+    # Check Reranker Service
+    try:
+        if settings.ENABLE_RERANKING:
+            info = reranker_service.get_model_info()
+            services_status["services"]["reranker"] = {
+                "status": "operational",
+                **info
+            }
+        else:
+            services_status["services"]["reranker"] = {"status": "disabled"}
+    except Exception as e:
+        services_status["services"]["reranker"] = {"status": "error", "error": str(e)}
+    
+    return services_status
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
