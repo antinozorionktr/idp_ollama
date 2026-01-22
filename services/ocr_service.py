@@ -1,5 +1,6 @@
 """
 OCR Service v2.0 - Upgraded with High-DPI Vision
+Compatible with PaddleOCR v3.x API
 - 200+ DPI for better text extraction
 - Enhanced table recognition
 - Layout-aware processing
@@ -10,41 +11,42 @@ import numpy as np
 from PIL import Image
 import io
 import fitz  # PyMuPDF
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Optional
 import logging
+import os
 from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Suppress PaddleOCR connectivity check
+os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
 
 class OCRService:
     def __init__(self):
-        """Initialize PaddleOCR with enhanced settings"""
-        self.ocr = PaddleOCR(
-            use_angle_cls=True,
-            lang=settings.PADDLE_OCR_LANG,
-            use_gpu=settings.PADDLE_OCR_USE_GPU,
-            show_log=False,
-            # Enhanced OCR settings
-            det_db_thresh=0.3,  # Lower threshold for better detection
-            det_db_box_thresh=0.5,
-            det_db_unclip_ratio=1.6,
-            rec_batch_num=16,
-            use_space_char=True,  # Better space detection
-        )
+        """Initialize PaddleOCR with settings compatible with v3.x"""
+        try:
+            # PaddleOCR v3.x simplified initialization
+            # Only use parameters that are supported in v3.x
+            self.ocr = PaddleOCR(
+                use_angle_cls=True,
+                lang=settings.PADDLE_OCR_LANG,
+            )
+            
+            logger.info(f"PaddleOCR initialized with lang={settings.PADDLE_OCR_LANG}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize PaddleOCR: {e}")
+            # Fallback to minimal config
+            self.ocr = PaddleOCR(lang="en")
+            logger.info("PaddleOCR initialized with fallback config")
         
         # Table structure recognition (optional)
         self.table_engine = None
         if settings.OCR_ENABLE_TABLE_RECOGNITION:
             try:
                 from paddleocr import PPStructure
-                self.table_engine = PPStructure(
-                    show_log=False,
-                    use_gpu=settings.PADDLE_OCR_USE_GPU,
-                    table=True,
-                    ocr=True,
-                    layout=settings.OCR_ENABLE_LAYOUT_ANALYSIS
-                )
+                self.table_engine = PPStructure(table=True, ocr=True)
                 logger.info("Table structure recognition enabled")
             except Exception as e:
                 logger.warning(f"Table recognition not available: {e}")
@@ -96,18 +98,16 @@ class OCRService:
             # Preprocess image for better OCR
             img = self._preprocess_image(img)
             
-            # Convert back to bytes
-            img_bytes = io.BytesIO()
-            img.save(img_bytes, format='PNG', dpi=(self.dpi, self.dpi))
-            img_bytes = img_bytes.getvalue()
+            # Convert to numpy array for PaddleOCR
+            img_array = np.array(img)
             
             # Run OCR on high-DPI image
-            result = self.ocr.ocr(img_bytes, cls=True)
+            result = self.ocr.ocr(img_array, cls=True)
             page_data = self._parse_ocr_result(result, page_num + 1)
             
             # Extract tables if enabled
             if self.table_engine:
-                table_result = self._extract_tables(img_bytes, page_num + 1)
+                table_result = self._extract_tables(img_array, page_num + 1)
                 page_data["tables"] = table_result
                 all_tables.extend(table_result)
             
@@ -134,23 +134,25 @@ class OCRService:
         # Open and preprocess image
         img = Image.open(io.BytesIO(img_content))
         
+        # Convert to RGB if necessary
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
         # Upscale if needed to meet DPI requirements
         img = self._upscale_image(img)
         img = self._preprocess_image(img)
         
-        # Convert to bytes
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format='PNG')
-        img_bytes = img_bytes.getvalue()
+        # Convert to numpy array
+        img_array = np.array(img)
         
         # Run OCR
-        result = self.ocr.ocr(img_bytes, cls=True)
+        result = self.ocr.ocr(img_array, cls=True)
         page_data = self._parse_ocr_result(result, 1)
         
         # Extract tables if enabled
         tables = []
         if self.table_engine:
-            tables = self._extract_tables(img_bytes, 1)
+            tables = self._extract_tables(img_array, 1)
             page_data["tables"] = tables
         
         return {
@@ -165,31 +167,33 @@ class OCRService:
     
     def _preprocess_image(self, img: Image.Image) -> Image.Image:
         """Preprocess image for better OCR accuracy"""
-        import cv2
-        import numpy as np
-        
-        # Convert PIL to OpenCV
-        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        
-        # Apply adaptive thresholding for better text contrast
-        # binary = cv2.adaptiveThreshold(
-        #     gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-        # )
-        
-        # Denoise
-        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
-        
-        # Sharpen
-        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-        sharpened = cv2.filter2D(denoised, -1, kernel)
-        
-        # Convert back to RGB PIL Image
-        img_processed = Image.fromarray(cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB))
-        
-        return img_processed
+        try:
+            import cv2
+            
+            # Convert PIL to OpenCV
+            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            
+            # Denoise
+            denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+            
+            # Sharpen
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            sharpened = cv2.filter2D(denoised, -1, kernel)
+            
+            # Convert back to RGB PIL Image
+            img_processed = Image.fromarray(cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB))
+            
+            return img_processed
+            
+        except ImportError:
+            logger.warning("OpenCV not available, skipping preprocessing")
+            return img
+        except Exception as e:
+            logger.warning(f"Preprocessing failed: {e}, using original image")
+            return img
     
     def _upscale_image(self, img: Image.Image, target_dpi: int = None) -> Image.Image:
         """Upscale image to target DPI if needed"""
@@ -197,7 +201,10 @@ class OCRService:
             target_dpi = self.dpi
         
         # Get current DPI (assume 72 if not specified)
-        current_dpi = img.info.get('dpi', (72, 72))[0]
+        try:
+            current_dpi = img.info.get('dpi', (72, 72))[0]
+        except:
+            current_dpi = 72
         
         if current_dpi < target_dpi:
             scale_factor = target_dpi / current_dpi
@@ -207,12 +214,12 @@ class OCRService:
         
         return img
     
-    def _extract_tables(self, img_bytes: bytes, page_num: int) -> List[Dict[str, Any]]:
+    def _extract_tables(self, img_array: np.ndarray, page_num: int) -> List[Dict[str, Any]]:
         """Extract tables using PPStructure"""
         tables = []
         
         try:
-            result = self.table_engine(img_bytes)
+            result = self.table_engine(img_array)
             
             for idx, item in enumerate(result):
                 if item.get('type') == 'table':
@@ -235,9 +242,21 @@ class OCRService:
         """
         Parse PaddleOCR result into structured format
         
-        PaddleOCR returns: [[[bbox], (text, confidence)], ...]
+        PaddleOCR v3.x returns: [[[bbox], (text, confidence)], ...]
         """
-        if not result or not result[0]:
+        if not result or (isinstance(result, list) and len(result) == 0):
+            return {
+                "page": page_num,
+                "text": "",
+                "boxes": [],
+                "word_count": 0,
+                "avg_confidence": 0.0
+            }
+        
+        # Handle nested list structure
+        ocr_lines = result[0] if result and isinstance(result[0], list) else result
+        
+        if not ocr_lines:
             return {
                 "page": page_num,
                 "text": "",
@@ -250,33 +269,46 @@ class OCRService:
         texts = []
         confidences = []
         
-        for line in result[0]:
+        for line in ocr_lines:
+            if not line or len(line) < 2:
+                continue
+                
             bbox = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
             text_info = line[1]  # (text, confidence)
             
-            text = text_info[0]
-            confidence = text_info[1]
+            if isinstance(text_info, tuple) and len(text_info) >= 2:
+                text = text_info[0]
+                confidence = text_info[1]
+            elif isinstance(text_info, str):
+                text = text_info
+                confidence = 1.0
+            else:
+                continue
             
             # Convert bbox to simple format
-            x_coords = [point[0] for point in bbox]
-            y_coords = [point[1] for point in bbox]
-            
-            box_data = {
-                "text": text,
-                "confidence": float(confidence),
-                "bbox": {
-                    "x1": min(x_coords),
-                    "y1": min(y_coords),
-                    "x2": max(x_coords),
-                    "y2": max(y_coords)
-                },
-                "polygon": bbox,  # Keep original polygon for precise positioning
-                "page": page_num
-            }
-            
-            boxes.append(box_data)
-            texts.append(text)
-            confidences.append(confidence)
+            try:
+                x_coords = [point[0] for point in bbox]
+                y_coords = [point[1] for point in bbox]
+                
+                box_data = {
+                    "text": text,
+                    "confidence": float(confidence),
+                    "bbox": {
+                        "x1": min(x_coords),
+                        "y1": min(y_coords),
+                        "x2": max(x_coords),
+                        "y2": max(y_coords)
+                    },
+                    "polygon": bbox,
+                    "page": page_num
+                }
+                
+                boxes.append(box_data)
+                texts.append(text)
+                confidences.append(confidence)
+            except Exception as e:
+                logger.warning(f"Failed to parse bbox: {e}")
+                continue
         
         # Sort boxes by vertical position (top to bottom, left to right)
         boxes.sort(key=lambda b: (b["bbox"]["y1"], b["bbox"]["x1"]))
