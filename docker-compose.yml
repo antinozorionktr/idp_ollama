@@ -39,6 +39,22 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+  
+  ml:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml
+    container_name: idp-ml
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+
 
   # ReactJS Frontend
   frontend:
