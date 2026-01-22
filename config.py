@@ -19,6 +19,9 @@ class LLMProvider(str, Enum):
 
 
 class Settings(BaseSettings):
+
+    API_BASE_URL: str = 'http://192.168.10.35:8002/'
+    
     # API Settings
     HOST: str = "0.0.0.0"
     PORT: int = 8000
