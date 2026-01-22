@@ -137,30 +137,88 @@ async def health_check():
     """Health check endpoint"""
     try:
         # Check vector store connection
-        vector_store.health_check()
+        vector_store_healthy = False
+        try:
+            vector_store.health_check()
+            vector_store_healthy = True
+        except:
+            pass
+        
+        # Check embedding service
+        embedding_healthy = False
+        try:
+            embedding_service.get_model_info()
+            embedding_healthy = True
+        except:
+            pass
+        
+        # Check LLM service
+        llm_healthy = False
+        try:
+            llm_service.get_model_info()
+            llm_healthy = True
+        except:
+            pass
+        
+        # Check reranker
+        reranker_healthy = False
+        try:
+            if settings.ENABLE_RERANKING:
+                reranker_service.get_model_info()
+                reranker_healthy = True
+            else:
+                reranker_healthy = True  # Disabled is okay
+        except:
+            pass
+        
+        # Overall status
+        all_healthy = vector_store_healthy and embedding_healthy and llm_healthy
         
         return {
-            "status": "healthy",
+            "status": "healthy" if all_healthy else "degraded",
             "timestamp": datetime.utcnow().isoformat(),
             "version": "2.0.0",
             "services": {
-                "ocr": f"operational ({settings.OCR_DPI} DPI)",
+                "ocr": "operational" if True else "error",  # OCR is always available
                 "layout_parser": "operational",
-                "embeddings": "operational",
-                "vector_store": f"operational (hybrid: {settings.ENABLE_HYBRID_SEARCH})",
-                "reranker": f"operational" if settings.ENABLE_RERANKING else "disabled",
-                "llm": f"operational ({settings.LLM_PROVIDER.value})"
+                "embeddings": "operational" if embedding_healthy else "error",
+                "vector_store": "operational" if vector_store_healthy else "error",
+                "reranker": "operational" if reranker_healthy else "error",
+                "llm": "operational" if llm_healthy else "error"
+            },
+            "models": {
+                "vision": "operational",  # Vision model status
+                "embedding": "operational" if embedding_healthy else "error",
+                "reasoning": "operational" if llm_healthy else "error"
             },
             "config": {
                 "hybrid_search": settings.ENABLE_HYBRID_SEARCH,
                 "reranking": settings.ENABLE_RERANKING,
                 "reranker_model": settings.RERANKER_MODEL if settings.ENABLE_RERANKING else None,
-                "llm_model": settings.OLLAMA_MODEL
+                "llm_model": settings.OLLAMA_MODEL,
+                "embedding_model": settings.EMBEDDING_MODEL
             }
         }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        raise HTTPException(status_code=503, detail="Service unhealthy")
+        return {
+            "status": "error",
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": str(e),
+            "services": {
+                "ocr": "error",
+                "layout_parser": "error",
+                "embeddings": "error",
+                "vector_store": "error",
+                "reranker": "error",
+                "llm": "error"
+            },
+            "models": {
+                "vision": "error",
+                "embedding": "error",
+                "reasoning": "error"
+            }
+        }
 
 
 @app.post("/api/v1/process", response_model=DocumentResponse)
@@ -684,16 +742,20 @@ async def debug_ollama():
     
     result = {
         "ollama_base_url": settings.OLLAMA_BASE_URL,
+        "ollama_url": settings.OLLAMA_BASE_URL,  # Frontend expects this field
+        "ollama_reachable": False,  # Frontend expects this field
         "configured_models": {
             "llm": settings.OLLAMA_MODEL,
             "embedding": settings.EMBEDDING_MODEL,
             "vision": settings.VISION_MODEL if settings.ENABLE_VISION_LLM else None,
-            "reranker": settings.RERANKER_MODEL if settings.ENABLE_RERANKING else None
+            "reranker": settings.RERANKER_MODEL if settings.ENABLE_RERANKING else None,
+            "reasoning": settings.OLLAMA_MODEL  # Add reasoning model for frontend
         },
         "connection_status": "unknown",
         "available_models": [],
         "model_status": {},
-        "errors": []
+        "errors": [],
+        "error": None  # Frontend expects this field
     }
     
     try:
@@ -703,6 +765,7 @@ async def debug_ollama():
                 response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
                 if response.status_code == 200:
                     result["connection_status"] = "connected"
+                    result["ollama_reachable"] = True
                     data = response.json()
                     models = data.get("models", [])
                     result["available_models"] = [
@@ -747,13 +810,19 @@ async def debug_ollama():
                                 }
                 else:
                     result["connection_status"] = "error"
+                    result["ollama_reachable"] = False
+                    result["error"] = f"Ollama returned status {response.status_code}"
                     result["errors"].append(f"Ollama returned status {response.status_code}")
                     
             except httpx.ConnectError as e:
                 result["connection_status"] = "disconnected"
+                result["ollama_reachable"] = False
+                result["error"] = f"Cannot connect to Ollama at {settings.OLLAMA_BASE_URL}"
                 result["errors"].append(f"Cannot connect to Ollama at {settings.OLLAMA_BASE_URL}: {str(e)}")
             except httpx.TimeoutException:
                 result["connection_status"] = "timeout"
+                result["ollama_reachable"] = False
+                result["error"] = "Connection to Ollama timed out"
                 result["errors"].append("Connection to Ollama timed out")
             
             # Test embedding endpoint
@@ -786,6 +855,7 @@ async def debug_ollama():
                     }
                     
     except Exception as e:
+        result["error"] = f"Debug check failed: {str(e)}"
         result["errors"].append(f"Debug check failed: {str(e)}")
     
     return result
