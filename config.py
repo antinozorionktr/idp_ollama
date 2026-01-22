@@ -34,9 +34,10 @@ class Settings(BaseSettings):
     QDRANT_HTTPS: bool = False
     
     # ==================== EMBEDDING SETTINGS ====================
-    EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
-    EMBEDDING_DIMENSION: int = 1024
-    EMBEDDING_DEVICE: str = "cuda"  # or "cpu"
+    # Using Ollama's embedding models (nomic-embed-text, mxbai-embed-large, etc.)
+    EMBEDDING_MODEL: str = "nomic-embed-text"  # Ollama model name
+    EMBEDDING_DIMENSION: int = 768  # nomic-embed-text dimension (auto-detected on init)
+    EMBEDDING_DEVICE: str = "cuda"  # Not used with Ollama, kept for compatibility
     
     # ==================== HYBRID SEARCH (NEW) ====================
     # Enable hybrid search (Vector + BM25 keyword search)
