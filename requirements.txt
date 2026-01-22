@@ -9,8 +9,9 @@ pydantic-settings
 python-multipart
 
 # OCR & Vision
-paddlepaddle-gpu
-paddleocr
+paddleocr==2.9.1
+paddlepaddle-gpu==2.6.2
+paddlex==3.3.13
 pdf2image
 PyMuPDF
 Pillow
