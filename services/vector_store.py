@@ -141,7 +141,8 @@ class VectorStoreService:
     def create_collection(
         self, 
         collection_name: str, 
-        vector_size: int = None
+        vector_size: int = None,
+        force_recreate: bool = False
     ) -> bool:
         """Create a new collection with hybrid search support"""
         try:
@@ -151,6 +152,64 @@ class VectorStoreService:
             # Check if collection exists
             collections = self.client.get_collections().collections
             exists = any(c.name == collection_name for c in collections)
+            
+            needs_recreation = False
+            
+            if exists:
+                # Check if existing collection has correct configuration
+                try:
+                    collection_info = self.client.get_collection(collection_name)
+                    
+                    # Check if hybrid is enabled but collection doesn't have sparse vectors
+                    if self.hybrid_enabled:
+                        has_sparse = (
+                            hasattr(collection_info.config.params, 'sparse_vectors') and 
+                            collection_info.config.params.sparse_vectors is not None and
+                            'sparse' in (collection_info.config.params.sparse_vectors or {})
+                        )
+                        
+                        # Also check if it's a named vector config with 'dense'
+                        vectors_config = collection_info.config.params.vectors
+                        has_named_dense = isinstance(vectors_config, dict) and 'dense' in vectors_config
+                        
+                        if not has_sparse or not has_named_dense:
+                            logger.warning(
+                                f"Collection '{collection_name}' exists but lacks hybrid search config. "
+                                f"Has sparse: {has_sparse}, Has named dense: {has_named_dense}. "
+                                f"Will recreate collection."
+                            )
+                            needs_recreation = True
+                    
+                    # Check vector dimension mismatch
+                    if not needs_recreation:
+                        if isinstance(collection_info.config.params.vectors, dict):
+                            # Named vectors
+                            dense_config = collection_info.config.params.vectors.get('dense')
+                            if dense_config and dense_config.size != vector_size:
+                                logger.warning(
+                                    f"Vector dimension mismatch: collection has {dense_config.size}, "
+                                    f"expected {vector_size}. Will recreate collection."
+                                )
+                                needs_recreation = True
+                        elif hasattr(collection_info.config.params.vectors, 'size'):
+                            # Single vector config
+                            if collection_info.config.params.vectors.size != vector_size:
+                                logger.warning(
+                                    f"Vector dimension mismatch: collection has "
+                                    f"{collection_info.config.params.vectors.size}, expected {vector_size}. "
+                                    f"Will recreate collection."
+                                )
+                                needs_recreation = True
+                                
+                except Exception as e:
+                    logger.warning(f"Could not verify collection config: {e}. Will recreate.")
+                    needs_recreation = True
+            
+            if force_recreate or needs_recreation:
+                if exists:
+                    logger.info(f"Deleting existing collection '{collection_name}' for recreation...")
+                    self.client.delete_collection(collection_name)
+                    exists = False
             
             if not exists:
                 if self.hybrid_enabled:
@@ -169,7 +228,7 @@ class VectorStoreService:
                             )
                         }
                     )
-                    logger.info(f"Created hybrid collection: {collection_name}")
+                    logger.info(f"Created hybrid collection: {collection_name} (dense dim: {vector_size})")
                 else:
                     # Dense only
                     self.client.create_collection(
@@ -179,7 +238,7 @@ class VectorStoreService:
                             distance=Distance.COSINE
                         )
                     )
-                    logger.info(f"Created collection: {collection_name}")
+                    logger.info(f"Created collection: {collection_name} (dim: {vector_size})")
                 
                 # Initialize BM25 encoder for this collection
                 self.bm25_encoders[collection_name] = BM25Encoder(
@@ -187,7 +246,13 @@ class VectorStoreService:
                     b=settings.BM25_B
                 )
             else:
-                logger.info(f"Collection already exists: {collection_name}")
+                logger.info(f"Collection already exists with correct config: {collection_name}")
+                # Ensure BM25 encoder exists
+                if collection_name not in self.bm25_encoders:
+                    self.bm25_encoders[collection_name] = BM25Encoder(
+                        k1=settings.BM25_K1,
+                        b=settings.BM25_B
+                    )
             
             return True
             
