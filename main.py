@@ -449,13 +449,30 @@ async def query_documents(request: QueryRequest):
 
 
 @app.delete("/api/v1/documents/{document_id}")
-async def delete_document(document_id: str, collection_name: str = "documents"):
+async def delete_document_simple(document_id: str, collection_name: str = "documents"):
+    """Delete a document and its chunks from the vector store (query param for collection)"""
+    try:
+        deleted_count = vector_store.delete_document(collection_name, document_id)
+        return {
+            "status": "success",
+            "document_id": document_id,
+            "collection": collection_name,
+            "deleted_chunks": deleted_count
+        }
+    except Exception as e:
+        logger.error(f"Error deleting document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
+
+
+@app.delete("/api/v1/documents/{collection_name}/{document_id}")
+async def delete_document(collection_name: str, document_id: str):
     """Delete a document and its chunks from the vector store"""
     try:
         deleted_count = vector_store.delete_document(collection_name, document_id)
         return {
             "status": "success",
             "document_id": document_id,
+            "collection": collection_name,
             "deleted_chunks": deleted_count
         }
     except Exception as e:
