@@ -1,22 +1,30 @@
 # ===========================================
 # IDP System v2 - Backend Dockerfile
-# Lightweight Python container
+# Optimized for PaddleOCR & OpenCV
 # ===========================================
 
 FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies REQUIRED by OpenCV / PaddleOCR
+# Install system dependencies
+# libgomp1: Fixes the 'libgomp.so.1' missing error
+# libgl1 & libglib2.0-0: Required for OpenCV
 RUN apt-get update && apt-get install -y \
     curl \
+    libgomp1 \
     libgl1 \
     libglib2.0-0 \
+    python3-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Upgrade pip and install requirements
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY config.py .
@@ -27,6 +35,11 @@ COPY utils/ ./utils/
 
 # Create upload directory
 RUN mkdir -p /app/uploads
+
+# Set Environment Variables to prevent Paddle crashes
+# Forces CPU if GPU is unavailable and prevents some optimization errors
+ENV FLAGS_use_tensorrt=0
+ENV DISABLE_MODEL_SOURCE_CHECK=True
 
 # Expose port
 EXPOSE 8002
