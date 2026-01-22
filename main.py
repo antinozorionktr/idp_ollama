@@ -482,10 +482,31 @@ async def delete_document(collection_name: str, document_id: str):
 
 @app.get("/api/v1/collections")
 async def list_collections():
-    """List all available collections in vector store"""
+    """List all available collections in vector store with details"""
     try:
-        collections = vector_store.list_collections()
-        return {"collections": collections}
+        collection_names = vector_store.list_collections()
+        
+        # Get details for each collection
+        collections_with_info = []
+        for name in collection_names:
+            try:
+                info = vector_store.get_collection_info(name)
+                collections_with_info.append({
+                    "name": name,
+                    "vectors_count": info.get("vectors_count", 0),
+                    "segments_count": info.get("segments_count", 0),
+                    "hybrid_enabled": info.get("hybrid_enabled", False)
+                })
+            except Exception as e:
+                # If we can't get info, add basic entry
+                collections_with_info.append({
+                    "name": name,
+                    "vectors_count": 0,
+                    "segments_count": 0,
+                    "hybrid_enabled": False
+                })
+        
+        return {"collections": collections_with_info}
     except Exception as e:
         logger.error(f"Error listing collections: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
