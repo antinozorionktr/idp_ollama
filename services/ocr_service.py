@@ -65,12 +65,13 @@ class OCRService:
             from paddleocr import PaddleOCR
             
             self.ocr = PaddleOCR(
-                use_angle_cls=False,  # Disable to reduce complexity
-                lang=lang,
-                use_gpu=False,
-                show_log=False,
-                enable_mkldnn=False,  # Disable MKL-DNN
-                cpu_threads=4,
+                use_angle_cls=True,
+                lang="ch",           
+                use_gpu=False,       # Crucial: Avoids GPU/CPU logic conflicts
+                ir_optim=False,      # <--- ABSOLUTELY REQUIRED to stop the SIGILL crash
+                enable_mkldnn=False, # Disable math library that requires AVX instructions
+                cpu_threads=1,       # Prevents OMP thread conflicts seen in your log
+                show_log=True
             )
             
             # Test with a small image to verify it works
