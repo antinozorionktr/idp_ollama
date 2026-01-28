@@ -18,6 +18,7 @@ from datetime import datetime
 import uuid
 
 from services.ocr_service import OCRService
+from services.chandra_ocr_service import ChandraOCRService, create_ocr_service
 from services.layout_service import LayoutService
 from services.chunking_service import ChunkingService
 from services.embedding_service import EmbeddingService
@@ -52,7 +53,23 @@ app.add_middleware(
 
 # Initialize services
 logger.info("Initializing services...")
-ocr_service = OCRService()
+
+# Initialize OCR service (Chandra or PaddleOCR based on config)
+try:
+    if settings.OCR_ENGINE.lower() == "chandra":
+        ocr_service = ChandraOCRService(
+            method=settings.CHANDRA_METHOD,
+            dpi=settings.OCR_DPI,
+            max_output_tokens=settings.CHANDRA_MAX_TOKENS,
+            vllm_api_base=settings.CHANDRA_VLLM_URL
+        )
+        logger.info(f"Using Chandra OCR (method: {settings.CHANDRA_METHOD})")
+    else:
+        ocr_service = OCRService()
+        logger.info("Using PaddleOCR")
+except Exception as e:
+    logger.warning(f"Failed to initialize preferred OCR: {e}, falling back to PaddleOCR")
+    ocr_service = OCRService()
 layout_service = LayoutService()
 chunking_service = ChunkingService()
 embedding_service = EmbeddingService()

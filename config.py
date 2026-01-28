@@ -62,10 +62,21 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 50
     
     # ==================== OCR SETTINGS (UPGRADED) ====================
+    # OCR Engine: "chandra" (recommended) or "paddle" 
+    OCR_ENGINE: str = "chandra"
+    
+    # Chandra OCR Settings (State-of-the-art accuracy)
+    CHANDRA_METHOD: str = "hf"  # "hf" for HuggingFace local, "vllm" for vLLM server
+    CHANDRA_MODEL: str = "datalab-to/chandra"
+    CHANDRA_VLLM_URL: str = "http://localhost:8000/v1"
+    CHANDRA_MAX_TOKENS: int = 8192
+    
+    # PaddleOCR Settings (fallback)
     PADDLE_OCR_LANG: str = "en"
     PADDLE_OCR_USE_GPU: bool = True
-    # UPGRADED: Higher DPI for better text extraction
-    OCR_DPI: int = 200  # Upgraded from 100 to 200+
+    
+    # Common OCR Settings
+    OCR_DPI: int = 300  # Higher DPI for better quality (200-400 recommended)
     OCR_ENABLE_TABLE_RECOGNITION: bool = True
     OCR_ENABLE_LAYOUT_ANALYSIS: bool = True
     
