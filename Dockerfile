@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121 || \
     pip install --no-cache-dir torch torchvision && \
     pip install --no-cache-dir -r requirements.txt || true && \
-    pip install --no-cache-dir chandra-ocr || echo "Chandra OCR installed"
+    pip install --no-cache-dir chandra-ocr
 
 # Copy application code
 COPY config.py .
@@ -68,4 +68,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8002/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
