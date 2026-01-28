@@ -774,8 +774,18 @@ async def get_config():
             "top_k": settings.RERANK_TOP_K
         },
         "ocr": {
+            "engine": settings.OCR_ENGINE,
             "dpi": settings.OCR_DPI,
-            "table_recognition": settings.OCR_ENABLE_TABLE_RECOGNITION
+            "table_recognition": settings.OCR_ENABLE_TABLE_RECOGNITION,
+            "chandra_method": settings.CHANDRA_METHOD if settings.OCR_ENGINE.lower() == "chandra" else None,
+            "chandra_model": settings.CHANDRA_MODEL if settings.OCR_ENGINE.lower() == "chandra" else None,
+            "features": {
+                "tables": True,
+                "handwriting": settings.OCR_ENGINE.lower() == "chandra",
+                "math_equations": settings.OCR_ENGINE.lower() == "chandra",
+                "forms": settings.OCR_ENGINE.lower() == "chandra",
+                "multi_column": settings.OCR_ENGINE.lower() == "chandra"
+            }
         },
         "llm": {
             "provider": settings.LLM_PROVIDER.value,
