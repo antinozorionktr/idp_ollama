@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
     cmake \
+    nvidia-cuda-toolkit \
     libgomp1 \
     libgl1 \
     libglib2.0-0 \
@@ -32,19 +33,22 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements and install
 COPY requirements.txt .
 
-# Upgrade pip
+# 1. Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Install Torch (GPU fallback to CPU)
-# We handle the fallback here, but it MUST succeed in one of the two forms
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121 || \
-    pip install --no-cache-dir torch torchvision
+# 2. Pre-install Torch (Required by flash-attn for its build process)
+# Using cu121 to match your GPU environment
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
-# Install dependencies
-# Note: Removed "|| true" to ensure we catch installation errors
+# 3. Copy and Install requirements (Remove flash-attn from requirements.txt first!)
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Explicitly install critical service components
+# 4. Attempt Flash Attention installation separately
+# --no-build-isolation is key here; it tells pip to use the Torch we just installed
+RUN pip install --no-cache-dir flash-attn --no-build-isolation || echo "Flash-attn build failed, continuing without it"
+
+# 5. Ensure Uvicorn and Chandra are present
 RUN pip install --no-cache-dir uvicorn chandra-ocr
 
 # Copy application code
