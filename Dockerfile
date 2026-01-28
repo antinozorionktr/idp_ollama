@@ -8,11 +8,9 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies
-# build-essential & cmake: Required to compile C++ based python wheels
-# libgomp1: Fixes the 'libgomp.so.1' missing error
-# libgl1 & libglib2.0-0: Required for OpenCV
-# poppler-utils: PDF processing for Chandra
-RUN apt-get update && apt-get install -y \
+RUN sed -i 's/main/main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources || \
+    seed -i 's/main/main contrib non-free/g' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y \
     curl \
     build-essential \
     cmake \
