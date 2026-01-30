@@ -27,6 +27,10 @@ class ChandraOCRService:
     - Forms with checkboxes
     - Multi-column layouts
     - 40+ language support
+    
+    Memory Management:
+    - Lazy loading: model loads only when needed
+    - Auto-unload: model unloads after processing to free GPU memory
     """
     
     def __init__(
@@ -37,7 +41,9 @@ class ChandraOCRService:
         max_output_tokens: int = 8192,
         dpi: int = 300,
         include_images: bool = True,
-        include_headers_footers: bool = False
+        include_headers_footers: bool = False,
+        lazy_load: bool = True,  # NEW: Enable lazy loading to save GPU memory
+        auto_unload: bool = True  # NEW: Automatically unload model after processing
     ):
         """
         Initialize Chandra OCR service.
@@ -50,6 +56,8 @@ class ChandraOCRService:
             dpi: DPI for PDF rendering
             include_images: Extract and return images from documents
             include_headers_footers: Include page headers/footers in output
+            lazy_load: If True, don't load model at init (saves memory)
+            auto_unload: If True, unload model after each processing call
         """
         self.method = method
         self.model_checkpoint = model_checkpoint
@@ -58,13 +66,60 @@ class ChandraOCRService:
         self.dpi = dpi
         self.include_images = include_images
         self.include_headers_footers = include_headers_footers
+        self.lazy_load = lazy_load
+        self.auto_unload = auto_unload
         
         self.manager = None
         self.model = None
         self._initialized = False
         
-        # Initialize the OCR engine
-        self._init_ocr()
+        # For vLLM method, always initialize (no GPU memory used locally)
+        # For HF method, defer loading if lazy_load is enabled
+        if method == "vllm" or not lazy_load:
+            self._init_ocr()
+        else:
+            logger.info(f"Chandra OCR configured with lazy loading (method: {method})")
+    
+    def _ensure_loaded(self):
+        """Ensure the model is loaded before processing"""
+        if not self._initialized:
+            logger.info("Lazy loading Chandra OCR model...")
+            self._init_ocr()
+    
+    def _unload_model(self):
+        """Unload model to free GPU memory"""
+        if self.method == "vllm":
+            # vLLM uses remote server, nothing to unload locally
+            return
+            
+        logger.info("Unloading Chandra OCR model to free GPU memory...")
+        
+        try:
+            import torch
+            import gc
+            
+            if self.manager is not None:
+                del self.manager
+                self.manager = None
+                
+            if self.model is not None:
+                del self.model
+                self.model = None
+            
+            self._initialized = False
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+            logger.info("Chandra OCR model unloaded, GPU memory freed")
+            
+        except Exception as e:
+            logger.warning(f"Error unloading model: {e}")
     
     def _init_ocr(self):
         """Initialize the Chandra OCR engine"""
@@ -138,17 +193,28 @@ class ChandraOCRService:
             - tables: Extracted table data
             - num_pages: Number of pages processed
         """
+        # Lazy load the model if not already loaded
+        self._ensure_loaded()
+        
         if not self._initialized:
-            raise RuntimeError("Chandra OCR not initialized")
+            raise RuntimeError("Chandra OCR failed to initialize")
         
         try:
             if content_type == 'application/pdf':
-                return self._process_pdf(file_content)
+                result = self._process_pdf(file_content)
             else:
-                return self._process_image(file_content)
+                result = self._process_image(file_content)
+            
+            return result
+            
         except Exception as e:
             logger.error(f"Chandra OCR extraction failed: {e}")
             raise
+            
+        finally:
+            # Auto-unload model to free GPU memory for other services (like Ollama)
+            if self.auto_unload and self.method == "hf":
+                self._unload_model()
     
     def _process_pdf(self, pdf_content: bytes) -> Dict[str, Any]:
         """Process PDF file using Chandra"""
@@ -220,9 +286,23 @@ class ChandraOCRService:
         results = self._process_images([img])
         return self._combine_results(results)
     
+    def _clear_gpu_memory(self):
+        """Clear GPU memory cache to free up VRAM"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                logger.info("GPU memory cache cleared")
+        except Exception as e:
+            logger.warning(f"Failed to clear GPU memory: {e}")
+    
     def _process_images(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
         """Process a list of images through Chandra"""
         results = []
+        
+        # Clear GPU memory before processing
+        self._clear_gpu_memory()
         
         if self.manager is not None:
             # Use InferenceManager
@@ -245,21 +325,71 @@ class ChandraOCRService:
                     
             except Exception as e:
                 logger.error(f"Chandra batch processing failed: {e}")
-                # Fallback to individual processing
-                for page_num, img in enumerate(images, 1):
-                    page_data = self._process_single_image(img, page_num)
-                    results.append(page_data)
+                
+                # Check if it's an OOM error
+                is_oom = "out of memory" in str(e).lower() or "cuda" in str(e).lower()
+                
+                if is_oom:
+                    logger.warning("GPU OOM detected, clearing memory and trying one page at a time...")
+                    self._clear_gpu_memory()
+                    
+                    # Try processing one page at a time with memory cleanup between each
+                    for page_num, img in enumerate(images, 1):
+                        try:
+                            self._clear_gpu_memory()
+                            batch = [BatchInputItem(image=img, prompt_type="ocr_layout")]
+                            ocr_results = self.manager.generate(batch)
+                            page_data = self._parse_chandra_result(ocr_results[0], page_num)
+                            results.append(page_data)
+                        except Exception as page_error:
+                            logger.error(f"Page {page_num} processing failed: {page_error}")
+                            # Return empty result for this page
+                            results.append(self._empty_page_result(page_num, str(page_error)))
+                else:
+                    # Non-OOM error - try individual processing with direct model if available
+                    for page_num, img in enumerate(images, 1):
+                        page_data = self._process_single_image(img, page_num)
+                        results.append(page_data)
         else:
             # Direct model inference
             for page_num, img in enumerate(images, 1):
                 page_data = self._process_single_image(img, page_num)
                 results.append(page_data)
         
+        # Clear memory after processing
+        self._clear_gpu_memory()
+        
         return results
+    
+    def _empty_page_result(self, page_num: int, error: str = "") -> Dict[str, Any]:
+        """Return an empty result for a page that failed to process"""
+        return {
+            "page": page_num,
+            "text": "",
+            "markdown": "",
+            "html": "",
+            "boxes": [],
+            "tables": [],
+            "word_count": 0,
+            "avg_confidence": 0.0,
+            "error": error
+        }
     
     def _process_single_image(self, img: Image.Image, page_num: int) -> Dict[str, Any]:
         """Process a single image using direct model inference"""
         try:
+            # If we have a manager, use it instead of direct model
+            if self.manager is not None:
+                from chandra.model.schema import BatchInputItem
+                batch = [BatchInputItem(image=img, prompt_type="ocr_layout")]
+                result = self.manager.generate(batch)[0]
+                return self._parse_chandra_result(result, page_num)
+            
+            # Direct model inference requires self.model to be set
+            if self.model is None:
+                logger.error("No model available for single image processing")
+                return self._empty_page_result(page_num, "No model available")
+            
             from chandra.model.hf import generate_hf
             from chandra.model.schema import BatchInputItem
             from chandra.output import parse_markdown
@@ -271,17 +401,7 @@ class ChandraOCRService:
             
         except Exception as e:
             logger.error(f"Single image processing failed: {e}")
-            return {
-                "page": page_num,
-                "text": "",
-                "markdown": "",
-                "html": "",
-                "boxes": [],
-                "tables": [],
-                "word_count": 0,
-                "avg_confidence": 0.0,
-                "error": str(e)
-            }
+            return self._empty_page_result(page_num, str(e))
     
     def _parse_chandra_result(self, result, page_num: int) -> Dict[str, Any]:
         """Parse Chandra result into structured format"""

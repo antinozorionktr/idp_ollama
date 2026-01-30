@@ -61,9 +61,11 @@ try:
             method=settings.CHANDRA_METHOD,
             dpi=settings.OCR_DPI,
             max_output_tokens=settings.CHANDRA_MAX_TOKENS,
-            vllm_api_base=settings.CHANDRA_VLLM_URL
+            vllm_api_base=settings.CHANDRA_VLLM_URL,
+            lazy_load=True,  # Don't load model at startup - saves 14GB GPU memory
+            auto_unload=True  # Unload after each OCR to free memory for Ollama
         )
-        logger.info(f"Using Chandra OCR (method: {settings.CHANDRA_METHOD})")
+        logger.info(f"Using Chandra OCR (method: {settings.CHANDRA_METHOD}, lazy_load=True, auto_unload=True)")
     else:
         ocr_service = OCRService()
         logger.info("Using PaddleOCR")
