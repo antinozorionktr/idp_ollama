@@ -162,13 +162,10 @@ class ChandraOCRService:
                 temp_path = f.name
             
             try:
-                # Load PDF as images (Chandra's load_pdf_images doesn't accept dpi parameter)
-                # If custom DPI is required, use the fallback method with PyMuPDF
-                if self.dpi != 300:  # Chandra uses ~300 DPI internally by default
-                    logger.info(f"Custom DPI ({self.dpi}) requested, using PyMuPDF fallback for DPI control")
-                    return self._process_pdf_fallback(pdf_content)
-                
-                images = load_pdf_images(temp_path)
+                # Load PDF as images
+                # load_pdf_images requires: (pdf_path, page_range)
+                # page_range=None means all pages
+                images = load_pdf_images(temp_path, None)
                 
                 # Process all pages
                 results = self._process_images(images)
@@ -181,6 +178,10 @@ class ChandraOCRService:
                 
         except ImportError:
             # Fallback: Use PyMuPDF for PDF to image conversion
+            return self._process_pdf_fallback(pdf_content)
+        except TypeError as e:
+            # If load_pdf_images signature changed, use fallback
+            logger.warning(f"Chandra load_pdf_images call failed: {e}, using PyMuPDF fallback")
             return self._process_pdf_fallback(pdf_content)
     
     def _process_pdf_fallback(self, pdf_content: bytes) -> Dict[str, Any]:
